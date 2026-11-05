@@ -53,7 +53,7 @@ export default function Tasks({ isAdmin }: { isAdmin: boolean }) {
         {q.error ? <ErrorBox error={q.error} /> : null}
         {tasks.length === 0 ? (
           <Empty>
-            No tasks yet. Create one here, with <code>mlq task create</code>, or ask Claude to.
+            No tasks yet. Create one here, with <code>ferry task create</code>, or ask Claude to.
           </Empty>
         ) : (
           <Table>

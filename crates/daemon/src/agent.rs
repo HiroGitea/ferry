@@ -1,4 +1,4 @@
-//! Agent mode (`mlqd --agent`): this machine runs jobs for a control node elsewhere.
+//! Agent mode (`ferryd --agent`): this machine runs jobs for a control node elsewhere.
 //!
 //! The agent exposes the local executor, GPU provider and scratch-disk file operations over
 //! HTTP (`/agent/v1`, bearer `agent.node_token`) and registers with the control node every
@@ -103,7 +103,7 @@ async fn image_present(State(st): State<S>, Json(r): Json<ImageReq>) -> R<bool> 
 async fn image_pull(State(st): State<S>, Json(r): Json<ImageReq>) -> R<()> {
     Ok(Json(st.executor.pull_image(&r.image).await?))
 }
-async fn images(State(st): State<S>) -> R<Vec<mlq_core::api::ImageInfo>> {
+async fn images(State(st): State<S>) -> R<Vec<ferry_core::api::ImageInfo>> {
     Ok(Json(st.executor.list_images().await?))
 }
 async fn image_remove(State(st): State<S>, Json(r): Json<ImageReq>) -> R<()> {
@@ -256,7 +256,7 @@ async fn fs_log(State(st): State<S>, Json(r): Json<PathReq>) -> R<(String, u64)>
 async fn fs_list_out(
     State(st): State<S>,
     Json(r): Json<PathReq>,
-) -> R<Vec<mlq_core::api::ArtifactEntry>> {
+) -> R<Vec<ferry_core::api::ArtifactEntry>> {
     Ok(Json(st.files.list_out(&st.check_path(&r.path)?).await?))
 }
 async fn fs_file_get(State(st): State<S>, Query(q): Query<RootQ>) -> Result<Response, AgentError> {

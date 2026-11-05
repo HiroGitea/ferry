@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mlq_core::JobState;
+use ferry_core::JobState;
 use tracing::warn;
 
 use super::now_secs;

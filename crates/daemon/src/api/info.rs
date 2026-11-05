@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use mlq_core::api::{ClusterStatus, GpuInfo, ImageInfo, Me, PullImageRequest};
-use mlq_core::{Job, JobState};
+use ferry_core::api::{ClusterStatus, GpuInfo, ImageInfo, Me, PullImageRequest};
+use ferry_core::{Job, JobState};
 use serde::Deserialize;
 
 use super::{ApiError, ApiResult};
@@ -71,7 +71,7 @@ pub async fn cluster_status(state: &AppState) -> anyhow::Result<ClusterStatus> {
             .nodes
             .primary()
             .map(|n| n.info())
-            .unwrap_or_else(|| mlq_core::api::NodeInfo {
+            .unwrap_or_else(|| ferry_core::api::NodeInfo {
                 id: "none".into(),
                 hostname: "control".into(),
                 cpus_total: 0.0,

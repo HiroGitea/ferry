@@ -5,8 +5,8 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use mlq_core::api::TokenInfo;
-use mlq_core::{
+use ferry_core::api::TokenInfo;
+use ferry_core::{
     Job, JobId, JobState, Quota, ResourceRequest, Role, Snapshot, SnapshotId, Task, TaskId,
     TaskState, User, UserId,
 };
@@ -141,7 +141,7 @@ pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     format!(
-        "mlq_{}",
+        "ferry_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
 }
@@ -1082,7 +1082,7 @@ impl Store {
 // ---------------------------------------------------------------- nodes
 
 impl Store {
-    pub async fn upsert_node(&self, reg: &mlq_core::api::NodeRegistration) -> anyhow::Result<()> {
+    pub async fn upsert_node(&self, reg: &ferry_core::api::NodeRegistration) -> anyhow::Result<()> {
         let now = Utc::now();
         sqlx::query(
             "INSERT INTO nodes (id, url, hostname, info, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)
@@ -1099,7 +1099,7 @@ impl Store {
         Ok(())
     }
 
-    pub async fn known_nodes(&self) -> anyhow::Result<Vec<mlq_core::api::NodeRegistration>> {
+    pub async fn known_nodes(&self) -> anyhow::Result<Vec<ferry_core::api::NodeRegistration>> {
         let rows = sqlx::query("SELECT info FROM nodes ORDER BY id")
             .fetch_all(&self.pool)
             .await?;

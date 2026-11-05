@@ -120,7 +120,7 @@ function GpuCard({ g, many }: { g: GpuInfo; many: boolean }) {
                 #{g.job_id}
               </Link>
             ) : g.mem_used > 500 * 1024 * 1024 ? (
-              <span className="text-warning">used outside mlq</span>
+              <span className="text-warning">used outside ferry</span>
             ) : (
               "idle"
             )}

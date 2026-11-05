@@ -1,4 +1,4 @@
-use mlq_core::api::Event;
+use ferry_core::api::Event;
 use tokio::sync::broadcast;
 
 #[derive(Clone)]

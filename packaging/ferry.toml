@@ -1,4 +1,4 @@
-# /etc/mlq/mlq.toml — mlqd configuration (all keys optional; shown with defaults or examples).
+# /etc/ferry/ferry.toml — ferryd configuration (all keys optional; shown with defaults or examples).
 
 # Where the REST API, dashboard and MCP endpoint listen. Use 0.0.0.0:7070 to allow remote
 # Claude Code / dashboard access (tokens are required either way); put a TLS reverse proxy in
@@ -6,15 +6,15 @@
 listen = "127.0.0.1:7070"
 
 # SQLite database, admin token and — by default — job workspaces. MUST be on the local SSD.
-data_dir = "/var/lib/mlq"
+data_dir = "/var/lib/ferry"
 # Per-job scratch (work/ and out/) root; defaults to <data_dir>/users. Keep it on the SSD.
-# scratch_root = "/ssd/mlq-scratch"
+# scratch_root = "/ssd/ferry-scratch"
 
 # Container runtime: "podman" (recommended, rootless), "docker", or "process" (no isolation,
 # development only).
 runtime = "podman"
 
-# Image used when a job does not name one. Pre-pull it: mlq image pull <ref>
+# Image used when a job does not name one. Pre-pull it: ferry image pull <ref>
 default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
 
 # Restrict images to this list (exact references, or prefixes ending in '/'). Empty = any image.
@@ -52,7 +52,7 @@ read_only = true
 
 [container]
 # Run the job as this uid:gid inside the container. With rootless podman and userns = "keep-id"
-# the container user maps to the daemon's `mlq` account on the host, which is what NFS sees;
+# the container user maps to the daemon's `ferry` account on the host, which is what NFS sees;
 # make sure the NAS export grants that uid read access (or use all_squash/anon uid mapping).
 user = "1000:1000"
 userns = "keep-id"
@@ -73,7 +73,7 @@ keep_days = 14
 max_scratch = "500G"
 # Copy /out and the log here (NAS) as soon as a job finishes. Workspaces whose archive copy
 # failed are never deleted.
-archive_dir = "/mnt/nas/mlq-results"
+archive_dir = "/mnt/nas/ferry-results"
 interval_secs = 3600
 
 [metrics]
@@ -100,3 +100,14 @@ metrics = true
 enabled = true
 # Usage halves every 7 days when ordering queued jobs of equal priority.
 half_life_secs = 604800
+
+[cluster]
+# This machine's name as a node (shown as job node_id).
+node_name = "local"
+# Run jobs on this machine too; false = pure control node (API, scheduler, NAS, dashboard).
+local_node = true
+# Shared secret compute agents present when registering (`ferryd --agent`, see
+# packaging/ferry-agent.toml). Empty = no agents accepted.
+node_token = ""
+# An agent silent for this long is marked offline; its queued jobs wait for it.
+node_timeout_secs = 30

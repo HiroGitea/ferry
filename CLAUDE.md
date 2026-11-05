@@ -1,20 +1,20 @@
-# mlq — developer notes
+# ferry — developer notes
 
 Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + React dashboard.
 
 ## Layout
 - `crates/core` — domain types and the pure scheduler (`scheduler::schedule`). No IO. Unit tests live here.
-- `crates/daemon` (`mlqd`) — axum REST/SSE API (`src/api/`), SQLite via sqlx (`store.rs`, `migrations/`),
+- `crates/daemon` (`ferryd`) — axum REST/SSE API (`src/api/`), SQLite via sqlx (`store.rs`, `migrations/`),
   scheduler loop + job lifecycle (`sched.rs`), tasks = long-lived environments with steps, snapshots
   (`podman commit`), rollback and keep-warm (`tasks.rs`), executors (`executor/container.rs` = podman/docker CLI
   incl. env/exec/commit, `executor/process.rs` = dev only, `executor/usage.rs` = cgroup v1/v2 + /proc counters),
   GPU providers (`gpu/`), netdata-style metrics (`metrics/`: collector + tiered storage in `metrics.db`),
   scratch retention + NAS archive (`retention.rs`), self-contained .7z task archives with export/import/offload
-  (`archive.rs`, needs the `7z` binary).
+  (`archive.rs`, needs the `7z` binary); nodes (`node.rs` registry + local node, `remote.rs` = agent client, `agent.rs` = `ferryd --agent` server, `api/nodes.rs` = registration/liveness).
 - `crates/client` — REST client used by the CLI and MCP.
-- `crates/mcp` — rmcp tool router; served over stdio (`mlq mcp serve`) and mounted at `/mcp` in the daemon.
-- `crates/cli` (`mlq`) — user CLI; `mlq daemon` runs mlqd in-process.
-- `web/` — Vite + React + Tailwind dashboard; `pnpm build` → `web/dist`, embedded with `--features mlq-daemon/embed-web`.
+- `crates/mcp` — rmcp tool router; served over stdio (`ferry mcp serve`) and mounted at `/mcp` in the daemon.
+- `crates/cli` (`ferry`) — user CLI; `ferry daemon` runs ferryd in-process.
+- `web/` — Vite + React + Tailwind dashboard; `pnpm build` → `web/dist`, embedded with `--features ferry-daemon/embed-web`.
 - `packaging/` — systemd unit, example config, PKGBUILD. `images/Containerfile` — default job image.
 
 ## Conventions
@@ -32,6 +32,6 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 
 ## Commands
 - `cargo test --workspace`; `cargo fmt --all`
-- `make dev-daemon` (process executor + fake GPUs), then `MLQ_TOKEN=$(cat /tmp/mlq-dev/admin.token) mlq info`
+- `make dev-daemon` (process executor + fake GPUs), then `FERRY_TOKEN=$(cat /tmp/ferry-dev/admin.token) ferry info`
 - Snapshots need a container runtime: set `runtime = "podman"` (rootful works for local testing).
 - `make release` builds everything with the dashboard embedded.

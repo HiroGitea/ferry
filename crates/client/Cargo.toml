@@ -1,11 +1,11 @@
 [package]
-name = "mlq-client"
+name = "ferry-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mlq-core.workspace = true
+ferry-core.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

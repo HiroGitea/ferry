@@ -1,16 +1,16 @@
 # Maintainer: you <you@example.com>
 # Build from a checkout:  cd packaging && makepkg -si
-pkgname=mlq
+pkgname=ferry
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Containerised GPU/CPU job queue for ML experiments with CLI, REST API, MCP server and web dashboard"
 arch=('x86_64' 'aarch64')
-url="https://github.com/example/mlq"
+url="https://github.com/OWNER/ferry"
 license=('MIT')
 depends=('podman' '7zip' 'gcc-libs')
 optdepends=('nvidia-container-toolkit: GPU passthrough (CDI)' 'nvidia-utils: NVML GPU metrics')
 makedepends=('cargo' 'pnpm' 'nodejs')
-backup=('etc/mlq/mlq.toml')
+backup=('etc/ferry/ferry.toml')
 source=()
 sha256sums=()
 
@@ -24,17 +24,17 @@ build() {
   pnpm install --frozen-lockfile
   pnpm build
   cd "$startdir/.."
-  cargo build --release --locked --features mlq-daemon/embed-web
+  cargo build --release --locked --features ferry-daemon/embed-web
 }
 
 package() {
   cd "$startdir/.."
-  install -Dm755 target/release/mlqd "$pkgdir/usr/bin/mlqd"
-  install -Dm755 target/release/mlq "$pkgdir/usr/bin/mlq"
-  install -Dm644 packaging/mlq.toml "$pkgdir/etc/mlq/mlq.toml"
-  sed 's#/usr/local/bin/#/usr/bin/#' packaging/mlqd.service > "$srcdir/mlqd.service"
-  install -Dm644 "$srcdir/mlqd.service" "$pkgdir/usr/lib/systemd/system/mlqd.service"
-  install -Dm644 packaging/mlq.sysusers "$pkgdir/usr/lib/sysusers.d/mlq.conf"
-  install -Dm644 packaging/mlq.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/mlq.conf"
+  install -Dm755 target/release/ferryd "$pkgdir/usr/bin/ferryd"
+  install -Dm755 target/release/ferry "$pkgdir/usr/bin/ferry"
+  install -Dm644 packaging/ferry.toml "$pkgdir/etc/ferry/ferry.toml"
+  sed 's#/usr/local/bin/#/usr/bin/#' packaging/ferryd.service > "$srcdir/ferryd.service"
+  install -Dm644 "$srcdir/ferryd.service" "$pkgdir/usr/lib/systemd/system/ferryd.service"
+  install -Dm644 packaging/ferry.sysusers "$pkgdir/usr/lib/sysusers.d/ferry.conf"
+  install -Dm644 packaging/ferry.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/ferry.conf"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use mlq_core::api::ImageInfo;
-use mlq_core::{Job, ResourceRequest};
+use ferry_core::api::ImageInfo;
+use ferry_core::{Job, ResourceRequest};
 
 use crate::config::{Config, Mount};
 use crate::workspace::Workspace;
@@ -35,7 +35,7 @@ pub struct RunSpec {
 
 /// A long-lived task environment.
 pub struct EnvSpec {
-    /// Container name (stable per task, e.g. `mlq-task-3`).
+    /// Container name (stable per task, e.g. `ferry-task-3`).
     pub name: String,
     pub labels: Vec<(String, String)>,
     pub image: String,

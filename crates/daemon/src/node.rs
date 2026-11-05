@@ -1,6 +1,6 @@
 //! Nodes: where jobs run. A node bundles an executor (containers), a GPU provider, file access
 //! to its scratch disk, and its managed resources. The local node wraps this machine; remote
-//! nodes are agents (`mlqd --agent`) that registered over the network.
+//! nodes are agents (`ferryd --agent`) that registered over the network.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use ferry_core::Inventory;
+use ferry_core::api::{ArtifactEntry, NodeInfo, NodeRegistration};
+use ferry_core::scheduler::NodeInventory;
 use futures::stream::BoxStream;
-use mlq_core::Inventory;
-use mlq_core::api::{ArtifactEntry, NodeInfo, NodeRegistration};
-use mlq_core::scheduler::NodeInventory;
 
 use crate::config::{Config, Mount};
 use crate::executor::Executor;
@@ -270,7 +270,7 @@ pub fn local_inventory(cfg: &Config, gpu: &dyn GpuProvider) -> Inventory {
     let mem = cfg
         .max_mem
         .as_deref()
-        .and_then(|m| mlq_core::parse_bytes(m).ok())
+        .and_then(|m| ferry_core::parse_bytes(m).ok())
         .unwrap_or(host_mem.saturating_sub(cfg.reserve_mem_bytes()));
     let detected: Vec<u32> = gpu.list().into_iter().map(|g| g.index).collect();
     let gpus = match &cfg.managed_gpus {

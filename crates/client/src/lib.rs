@@ -1,10 +1,9 @@
-//! HTTP client for the mlqd REST API, shared by the CLI and the MCP server.
+//! HTTP client for the ferryd REST API, shared by the CLI and the MCP server.
 
 use std::time::Duration;
 
 use anyhow::Context;
-use futures::StreamExt;
-use mlq_core::api::{
+use ferry_core::api::{
     ArchiveInfo, ArchiveManifest, ArtifactEntry, CheckoutRequest, ClusterStatus, CreateTaskRequest,
     CreateTokenRequest, CreateUserRequest, ErrorBody, Event, ExportTaskRequest, ExportTaskResponse,
     GpuInfo, ImageInfo, ImportArchiveRequest, JobResult, ListJobsQuery, ListTasksQuery, LogChunk,
@@ -12,7 +11,8 @@ use mlq_core::api::{
     SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo, UpdateTaskRequest, UsageQuery,
     UserUsage,
 };
-use mlq_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
+use ferry_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
+use futures::StreamExt;
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 
@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 pub enum ClientError {
     #[error("{status}: {message}")]
     Api { status: StatusCode, message: String },
-    #[error("cannot reach mlqd at {url}: {source}")]
+    #[error("cannot reach ferryd at {url}: {source}")]
     Connect { url: String, source: reqwest::Error },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -100,7 +100,7 @@ impl Client {
     pub async fn status(&self) -> Result<ClusterStatus, ClientError> {
         self.send(self.req(Method::GET, "/status")).await
     }
-    pub async fn nodes(&self) -> Result<Vec<mlq_core::api::NodeStatus>, ClientError> {
+    pub async fn nodes(&self) -> Result<Vec<ferry_core::api::NodeStatus>, ClientError> {
         self.send(self.req(Method::GET, "/nodes")).await
     }
     pub async fn delete_node(&self, id: &str) -> Result<serde_json::Value, ClientError> {

@@ -6,11 +6,11 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use mlq_core::api::{
+use ferry_core::api::{
     ArtifactEntry, Event, JobResult, ListJobsQuery, LogChunk, LogQuery, SubmitJobRequest,
     SubmitJobResponse,
 };
-use mlq_core::{Job, JobId, JobState, ResourceRequest, TaskState};
+use ferry_core::{Job, JobId, JobState, ResourceRequest, TaskState};
 use serde::Deserialize;
 
 use super::{ApiError, ApiResult};
@@ -92,7 +92,7 @@ fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
         .filter(|n| n.is_online())
         .map(|n| n.facts().inventory)
         .collect();
-    let inv = mlq_core::Inventory {
+    let inv = ferry_core::Inventory {
         cpus: online.iter().map(|i| i.cpus).fold(0.0, f64::max),
         mem_bytes: online.iter().map(|i| i.mem_bytes).max().unwrap_or(0),
         gpus: online
@@ -105,7 +105,7 @@ fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
         return format!(
             "will never run: request exceeds managed inventory ({} cpus, {} mem, {} gpus)",
             inv.cpus,
-            mlq_core::resource::format_bytes(inv.mem_bytes),
+            ferry_core::resource::format_bytes(inv.mem_bytes),
             inv.gpus.len()
         );
     }
@@ -128,7 +128,7 @@ fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
     } else {
         format!(
             "will queue: {queued_ahead} job(s) ahead, free now = {free_cpus:.1} cpus, {} mem, {free_gpus} gpus",
-            mlq_core::resource::format_bytes(free_mem)
+            ferry_core::resource::format_bytes(free_mem)
         )
     }
 }

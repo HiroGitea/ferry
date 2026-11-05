@@ -8,7 +8,7 @@ use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use mlq_core::{Role, User};
+use ferry_core::{Role, User};
 
 use crate::api::ApiError;
 use crate::state::AppState;

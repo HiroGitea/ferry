@@ -95,7 +95,7 @@ impl Default for ClusterConfig {
     }
 }
 
-/// `mlqd --agent`: this machine runs jobs for a control node elsewhere.
+/// `ferryd --agent`: this machine runs jobs for a control node elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentConfig {
@@ -178,11 +178,11 @@ impl Default for Config {
     fn default() -> Self {
         let root = nix_is_root();
         let data_dir = if root {
-            PathBuf::from("/var/lib/mlq")
+            PathBuf::from("/var/lib/ferry")
         } else {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("mlq")
+                .join("ferry")
         };
         Self {
             listen: "127.0.0.1:7070".into(),
@@ -257,7 +257,7 @@ impl Config {
     pub fn load(path: Option<&Path>) -> anyhow::Result<Config> {
         let candidates: Vec<PathBuf> = match path {
             Some(p) => vec![p.to_path_buf()],
-            None => vec![PathBuf::from("/etc/mlq/mlq.toml")],
+            None => vec![PathBuf::from("/etc/ferry/ferry.toml")],
         };
         for p in candidates {
             if p.exists() {
@@ -274,7 +274,7 @@ impl Config {
     }
 
     pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join("mlq.db")
+        self.data_dir.join("ferry.db")
     }
 
     pub fn scratch_root(&self) -> PathBuf {
@@ -284,7 +284,7 @@ impl Config {
     }
 
     pub fn reserve_mem_bytes(&self) -> u64 {
-        mlq_core::parse_bytes(&self.reserve_mem).unwrap_or(0)
+        ferry_core::parse_bytes(&self.reserve_mem).unwrap_or(0)
     }
 
     pub fn image_allowed(&self, image: &str) -> bool {
@@ -307,7 +307,7 @@ impl Config {
             container: "/data".into(),
             read_only: true,
         }];
-        c.retention.archive_dir = Some("/mnt/nas/mlq-results".into());
+        c.retention.archive_dir = Some("/mnt/nas/ferry-results".into());
         c.retention.max_scratch = Some("500G".into());
         toml::to_string_pretty(&c).unwrap_or_default()
     }

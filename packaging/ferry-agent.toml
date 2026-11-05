@@ -1,7 +1,7 @@
-# /etc/mlq/mlq.toml on a COMPUTE node (run with `mlqd --agent`).
+# /etc/ferry/ferry.toml on a COMPUTE node (run with `ferryd --agent`).
 # Only the sections below matter in agent mode; the rest of the daemon config is ignored.
 
-data_dir = "/var/lib/mlq"          # SSD: job workspaces live under <data_dir>/users
+data_dir = "/var/lib/ferry"          # SSD: job workspaces live under <data_dir>/users
 runtime = "podman"
 default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
 reserve_cpus = 2
@@ -22,7 +22,7 @@ userns = "keep-id"
 shm_size = "8g"
 
 [cluster]
-# How this machine appears in `mlq node list` and as job `node_id`.
+# How this machine appears in `ferry node list` and as job `node_id`.
 node_name = "gpu-box-1"
 
 [agent]

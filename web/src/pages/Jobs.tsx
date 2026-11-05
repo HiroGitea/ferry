@@ -56,7 +56,7 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
       >
         {q.error ? <ErrorBox error={q.error} /> : null}
         {jobs.length === 0 ? (
-          <Empty>No jobs. Submit one with <code>mlq submit</code> or ask Claude.</Empty>
+          <Empty>No jobs. Submit one with <code>ferry submit</code> or ask Claude.</Empty>
         ) : (
           <Table>
             <thead>

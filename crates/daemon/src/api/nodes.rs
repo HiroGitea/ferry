@@ -10,7 +10,7 @@ use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use chrono::Utc;
-use mlq_core::api::{NodeRegistration, NodeStatus};
+use ferry_core::api::{NodeRegistration, NodeStatus};
 use tracing::{info, warn};
 
 use super::{ApiError, ApiResult};

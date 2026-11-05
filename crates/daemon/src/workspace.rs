@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, bail};
-use mlq_core::JobId;
+use ferry_core::JobId;
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -32,7 +32,7 @@ impl Workspace {
 
     /// Log file of a job: `job.log` for one-shot jobs, `logs/<job_id>.log` for task steps
     /// (several steps share one task workspace).
-    pub fn log_for(&self, job: &mlq_core::Job) -> PathBuf {
+    pub fn log_for(&self, job: &ferry_core::Job) -> PathBuf {
         match job.task_id {
             Some(_) => self.root.join("logs").join(format!("{}.log", job.id)),
             None => self.log(),
@@ -102,7 +102,7 @@ impl Workspace {
         Ok(n)
     }
 
-    pub fn list_out(&self) -> anyhow::Result<Vec<mlq_core::api::ArtifactEntry>> {
+    pub fn list_out(&self) -> anyhow::Result<Vec<ferry_core::api::ArtifactEntry>> {
         let base = self.out();
         let mut entries = Vec::new();
         if !base.exists() {
@@ -115,7 +115,7 @@ impl Workspace {
             let e = e?;
             let rel = e.path().strip_prefix(&base)?.to_string_lossy().to_string();
             let md = e.metadata()?;
-            entries.push(mlq_core::api::ArtifactEntry {
+            entries.push(ferry_core::api::ArtifactEntry {
                 path: rel,
                 size: md.len(),
                 is_dir: md.is_dir(),

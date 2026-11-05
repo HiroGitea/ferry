@@ -6,17 +6,17 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use mlq_client::Client;
-use mlq_core::api::{CreateTokenRequest, CreateUserRequest, ListJobsQuery, UsageQuery};
-use mlq_core::{JobState, Quota, Role};
+use ferry_client::Client;
+use ferry_core::api::{CreateTokenRequest, CreateUserRequest, ListJobsQuery, UsageQuery};
+use ferry_core::{JobState, Quota, Role};
 
 #[derive(Parser)]
-#[command(name = "mlq", version, about = "Containerised GPU/CPU job queue for ML experiments", long_about = None)]
+#[command(name = "ferry", version, about = "Containerised GPU/CPU job queue for ML experiments", long_about = None)]
 struct Cli {
-    /// Daemon URL (overrides MLQ_URL and the config file)
+    /// Daemon URL (overrides FERRY_URL and the config file)
     #[arg(long, global = true)]
     url: Option<String>,
-    /// API token (overrides MLQ_TOKEN and the config file)
+    /// API token (overrides FERRY_TOKEN and the config file)
     #[arg(long, global = true, hide_env_values = true)]
     token: Option<String>,
     /// Print raw JSON instead of tables
@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Save the daemon URL and token to ~/.config/mlq/config.toml
+    /// Save the daemon URL and token to ~/.config/ferry/config.toml
     Login {
         #[arg(long, default_value = "http://127.0.0.1:7070")]
         url: String,
@@ -36,7 +36,7 @@ enum Cmd {
         #[arg(long)]
         token: Option<String>,
     },
-    /// Submit a job (`mlq submit [opts] -- cmd args...` or `mlq submit script.sh`)
+    /// Submit a job (`ferry submit [opts] -- cmd args...` or `ferry submit script.sh`)
     Submit(submit::SubmitArgs),
     /// Submit, follow the log and wait for completion
     Run(submit::SubmitArgs),
@@ -120,12 +120,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: McpCmd,
     },
-    /// Run the scheduler daemon in the foreground (same as `mlqd`)
+    /// Run the scheduler daemon in the foreground (same as `ferryd`)
     Daemon {
-        #[arg(short, long, env = "MLQ_CONFIG")]
+        #[arg(short, long, env = "FERRY_CONFIG")]
         config: Option<PathBuf>,
     },
-    /// Print an example mlq.toml
+    /// Print an example ferry.toml
     ExampleConfig,
     /// Run the scratch retention sweep now (admin)
     Sweep,
@@ -146,7 +146,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ArchiveCmd,
     },
-    /// Print metric time series as sparklines (e.g. `mlq metrics 'gpu.*' --since 1h`)
+    /// Print metric time series as sparklines (e.g. `ferry metrics 'gpu.*' --since 1h`)
     Metrics {
         /// Comma separated keys; `prefix*` patterns allowed. Use `--list` to see keys.
         #[arg(default_value = "host.*")]
@@ -163,7 +163,7 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Create a task; prints its id. Steps: `mlq run --task <id> -- cmd`
+    /// Create a task; prints its id. Steps: `ferry run --task <id> -- cmd`
     Create {
         name: String,
         #[arg(short = 'i', long)]
@@ -305,7 +305,7 @@ enum TokenCmd {
 
 #[derive(Subcommand)]
 enum McpCmd {
-    /// Serve MCP over stdio (add with: claude mcp add mlq -- mlq mcp serve)
+    /// Serve MCP over stdio (add with: claude mcp add ferry -- ferry mcp serve)
     Serve,
 }
 
@@ -501,7 +501,7 @@ async fn real_main() -> anyhow::Result<()> {
                         t.user.name, t.user.id, t.token
                     );
                     println!(
-                        "\nthey can log in with:\n  mlq login --url <daemon-url> --token {}",
+                        "\nthey can log in with:\n  ferry login --url <daemon-url> --token {}",
                         t.token
                     );
                 }
@@ -583,16 +583,16 @@ async fn real_main() -> anyhow::Result<()> {
         }
         Cmd::Mcp { cmd: McpCmd::Serve } => {
             // stdout is the protocol channel: log to stderr only.
-            mlq_daemon::init_tracing("warn");
+            ferry_daemon::init_tracing("warn");
             let c = client(&cli)?;
-            mlq_mcp::serve_stdio(c).await?;
+            ferry_mcp::serve_stdio(c).await?;
         }
         Cmd::Daemon { config } => {
-            let cfg = mlq_daemon::config::Config::load(config.as_deref())?;
-            mlq_daemon::run(cfg).await?;
+            let cfg = ferry_daemon::config::Config::load(config.as_deref())?;
+            ferry_daemon::run(cfg).await?;
         }
         Cmd::ExampleConfig => {
-            print!("{}", mlq_daemon::config::Config::example_toml());
+            print!("{}", ferry_daemon::config::Config::example_toml());
         }
         Cmd::Sweep => {
             let c = client(&cli)?;
@@ -604,7 +604,7 @@ async fn real_main() -> anyhow::Result<()> {
                 if s == "0" {
                     Ok(0)
                 } else {
-                    Ok(mlq_core::parse_duration_secs(s)?)
+                    Ok(ferry_core::parse_duration_secs(s)?)
                 }
             };
             let detail = match cmd {
@@ -617,12 +617,12 @@ async fn real_main() -> anyhow::Result<()> {
                     keep_warm,
                     node,
                 } => {
-                    let req = mlq_core::api::CreateTaskRequest {
+                    let req = ferry_core::api::CreateTaskRequest {
                         name: name.clone(),
                         image: image.clone(),
-                        resources: mlq_core::ResourceOverrides {
+                        resources: ferry_core::ResourceOverrides {
                             cpus: *cpus,
-                            mem_bytes: mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
+                            mem_bytes: mem.as_deref().map(ferry_core::parse_bytes).transpose()?,
                             gpus: *gpus,
                         },
                         keep_warm_secs: Some(secs(keep_warm)?),
@@ -631,7 +631,7 @@ async fn real_main() -> anyhow::Result<()> {
                     let d = c.create_task(&req).await?;
                     if !cli.json {
                         println!(
-                            "task {} created; run steps with: mlq run --task {} -- <command>",
+                            "task {} created; run steps with: ferry run --task {} -- <command>",
                             d.summary.task.id, d.summary.task.id
                         );
                     }
@@ -639,7 +639,7 @@ async fn real_main() -> anyhow::Result<()> {
                 }
                 TaskCmd::List { all } => {
                     let t = c
-                        .tasks(&mlq_core::api::ListTasksQuery {
+                        .tasks(&ferry_core::api::ListTasksQuery {
                             all: *all,
                             user: None,
                         })
@@ -674,12 +674,12 @@ async fn real_main() -> anyhow::Result<()> {
                     mem,
                     gpus,
                 } => {
-                    let req = mlq_core::api::UpdateTaskRequest {
+                    let req = ferry_core::api::UpdateTaskRequest {
                         name: name.clone(),
                         keep_warm_secs: keep_warm.as_deref().map(secs).transpose()?,
-                        resources: mlq_core::ResourceOverrides {
+                        resources: ferry_core::ResourceOverrides {
                             cpus: *cpus,
-                            mem_bytes: mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
+                            mem_bytes: mem.as_deref().map(ferry_core::parse_bytes).transpose()?,
                             gpus: *gpus,
                         },
                     };
@@ -700,7 +700,7 @@ async fn real_main() -> anyhow::Result<()> {
                     let r = c
                         .export_task(
                             *id,
-                            &mlq_core::api::ExportTaskRequest {
+                            &ferry_core::api::ExportTaskRequest {
                                 images: images.clone(),
                                 offload: *offload,
                             },
@@ -764,14 +764,14 @@ async fn real_main() -> anyhow::Result<()> {
                     node,
                 } => {
                     let d = c
-                        .import_archive(&mlq_core::api::ImportArchiveRequest {
+                        .import_archive(&ferry_core::api::ImportArchiveRequest {
                             name: name.clone(),
                             task_name: name_as.clone(),
                             node: node.clone(),
                         })
                         .await?;
                     println!(
-                        "imported as task {}; continue with: mlq run --task {} -- <command>",
+                        "imported as task {}; continue with: ferry run --task {} -- <command>",
                         d.summary.task.id, d.summary.task.id
                     );
                     fmt::print_task(&d);
@@ -790,9 +790,9 @@ async fn real_main() -> anyhow::Result<()> {
                     println!("{:<32} {}", k.key, k.unit);
                 }
             } else {
-                let secs = mlq_core::parse_duration_secs(since)? as i64;
+                let secs = ferry_core::parse_duration_secs(since)? as i64;
                 let r = c
-                    .metrics(&mlq_core::api::MetricsQuery {
+                    .metrics(&ferry_core::api::MetricsQuery {
                         keys: keys.clone(),
                         after: Some(-secs),
                         before: None,

@@ -1,18 +1,18 @@
 [package]
-name = "mlq-cli"
+name = "ferry-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "mlq"
+name = "ferry"
 path = "src/main.rs"
 
 [dependencies]
-mlq-core.workspace = true
-mlq-client.workspace = true
-mlq-daemon.workspace = true
-mlq-mcp.workspace = true
+ferry-core.workspace = true
+ferry-client.workspace = true
+ferry-daemon.workspace = true
+ferry-mcp.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

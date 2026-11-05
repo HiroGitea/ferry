@@ -12,7 +12,7 @@ pub struct CliConfig {
 pub fn path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("mlq")
+        .join("ferry")
         .join("config.toml")
 }
 
@@ -42,23 +42,23 @@ pub fn save(cfg: &CliConfig) -> anyhow::Result<()> {
 pub fn resolve(url: Option<String>, token: Option<String>) -> anyhow::Result<(String, String)> {
     let cfg = load();
     let url = url
-        .or_else(|| std::env::var("MLQ_URL").ok())
+        .or_else(|| std::env::var("FERRY_URL").ok())
         .or(cfg.url)
         .unwrap_or_else(|| "http://127.0.0.1:7070".into());
     let token = token
-        .or_else(|| std::env::var("MLQ_TOKEN").ok())
+        .or_else(|| std::env::var("FERRY_TOKEN").ok())
         .or(cfg.token)
         .or_else(|| {
             // Convenience for the admin on the server itself.
-            for p in ["/var/lib/mlq/admin.token"] {
+            for p in ["/var/lib/ferry/admin.token"] {
                 if let Ok(t) = std::fs::read_to_string(p) {
                     return Some(t.trim().to_string());
                 }
             }
             dirs::data_local_dir()
-                .and_then(|d| std::fs::read_to_string(d.join("mlq").join("admin.token")).ok())
+                .and_then(|d| std::fs::read_to_string(d.join("ferry").join("admin.token")).ok())
                 .map(|t| t.trim().to_string())
         })
-        .context("no token configured: run `mlq login`, or set MLQ_TOKEN")?;
+        .context("no token configured: run `ferry login`, or set FERRY_TOKEN")?;
     Ok((url, token))
 }

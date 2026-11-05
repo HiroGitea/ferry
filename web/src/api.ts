@@ -1,4 +1,4 @@
-// Typed client for the mlqd REST API. Mirrors crates/core/src/api.rs.
+// Typed client for the ferryd REST API. Mirrors crates/core/src/api.rs.
 
 export type JobState =
   | "queued"
@@ -245,7 +245,7 @@ export interface TokenCreated {
   token: string;
 }
 
-const TOKEN_KEY = "mlq.token";
+const TOKEN_KEY = "ferry.token";
 
 export function getToken(): string | null {
   try {

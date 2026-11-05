@@ -9,10 +9,10 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use bytes::Bytes;
+use ferry_core::Job;
+use ferry_core::api::{ArtifactEntry, ImageInfo};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
-use mlq_core::Job;
-use mlq_core::api::{ArtifactEntry, ImageInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::executor::{EnvSpec, Executor, Handle, RunSpec, Usage};
@@ -44,7 +44,7 @@ pub struct WireEnvSpec {
     pub labels: Vec<(String, String)>,
     pub image: String,
     pub user_name: String,
-    pub resources: mlq_core::ResourceRequest,
+    pub resources: ferry_core::ResourceRequest,
     pub gpu_ids: Vec<u32>,
     pub workspace_root: String,
     pub env: BTreeMap<String, String>,

@@ -12,14 +12,14 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/example/mlq"
+repository = "https://github.com/OWNER/ferry"
 rust-version = "1.85"
 
 [workspace.dependencies]
-mlq-core = { path = "crates/core" }
-mlq-client = { path = "crates/client" }
-mlq-daemon = { path = "crates/daemon" }
-mlq-mcp = { path = "crates/mcp" }
+ferry-core = { path = "crates/core" }
+ferry-client = { path = "crates/client" }
+ferry-daemon = { path = "crates/daemon" }
+ferry-mcp = { path = "crates/mcp" }
 
 anyhow = "1"
 thiserror = "2"

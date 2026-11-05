@@ -1,4 +1,4 @@
-//! mlqd: single-node container job scheduler daemon.
+//! ferryd: single-node container job scheduler daemon.
 
 pub mod agent;
 pub mod api;
@@ -64,7 +64,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<Arc<AppState>> {
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
     init_tracing(&config.log_level);
-    info!(version = VERSION, "starting mlqd");
+    info!(version = VERSION, "starting ferryd");
     let state = build_state(config).await?;
     let listen = state.config.listen.clone();
 

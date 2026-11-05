@@ -1,0 +1,43 @@
+# systemd unit for the ferry scheduler daemon.
+#
+# Install:
+#   sudo useradd -r -m -d /var/lib/ferry -s /usr/bin/nologin ferry
+#   sudo loginctl enable-linger ferry            # rootless podman needs a user session
+#   sudo cp target/release/ferryd target/release/ferry /usr/local/bin/
+#   sudo mkdir -p /etc/ferry && sudo cp packaging/ferry.toml /etc/ferry/ferry.toml   # then edit it
+#   sudo cp packaging/ferryd.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ferryd
+#   sudo cat /var/lib/ferry/admin.token        # first admin token
+#
+# The daemon runs as the unprivileged `ferry` user and starts job containers with rootless
+# podman, so a container escape yields only that account.
+
+[Unit]
+Description=ferry GPU job scheduler
+After=network-online.target remote-fs.target
+Wants=network-online.target
+# If datasets/archive live on NFS, start after the mount:
+# RequiresMountsFor=/mnt/nas
+
+[Service]
+Type=simple
+User=ferry
+Group=ferry
+Environment=FERRY_CONFIG=/etc/ferry/ferry.toml
+# Rootless podman needs XDG_RUNTIME_DIR to find its socket/state.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/usr/local/bin/ferryd --config /etc/ferry/ferry.toml
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=60
+# Hardening (job containers are children of podman, not of this service's cgroup, so these
+# limits apply to the daemon itself only).
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/ferry /mnt/nas/ferry-results
+
+[Install]
+WantedBy=multi-user.target

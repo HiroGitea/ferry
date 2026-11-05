@@ -7,8 +7,8 @@ use std::sync::Mutex;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-use mlq_core::api::ImageInfo;
-use mlq_core::{Job, ResourceRequest};
+use ferry_core::api::ImageInfo;
+use ferry_core::{Job, ResourceRequest};
 use tokio::process::Command;
 
 use super::{EnvSpec, Executor, Handle, RunSpec, Usage};
@@ -83,7 +83,7 @@ impl ContainerExecutor {
     }
 
     pub fn container_name(job_id: i64) -> String {
-        format!("mlq-{job_id}")
+        format!("ferry-{job_id}")
     }
 
     /// `run -d ...` up to (not including) the image. Public for unit tests.
@@ -169,8 +169,8 @@ impl ContainerExecutor {
     pub fn run_args(&self, spec: &RunSpec) -> Vec<String> {
         let job = &spec.job;
         let labels = vec![
-            ("mlq.job".to_string(), job.id.to_string()),
-            ("mlq.user".to_string(), job.user_name.clone()),
+            ("ferry.job".to_string(), job.id.to_string()),
+            ("ferry.user".to_string(), job.user_name.clone()),
         ];
         let name = Self::container_name(job.id);
         let mut a = self.common_args(&CommonArgs {
@@ -198,11 +198,11 @@ impl ContainerExecutor {
             mounts: &spec.mounts,
             env: &spec.env,
         });
-        // Step logs and exit codes are written by the step itself into /.mlq (the task's logs/
+        // Step logs and exit codes are written by the step itself into /.ferry (the task's logs/
         // directory), so a step keeps running and stays observable if the daemon restarts.
         a.push("-v".into());
         a.push(format!(
-            "{}:/.mlq",
+            "{}:/.ferry",
             spec.workspace.root.join("logs").display()
         ));
         // A tiny init reaps orphans; the environment idles until steps are exec'd into it.
@@ -221,11 +221,11 @@ impl ContainerExecutor {
         }
         a.push(env.to_string());
         // $0 = job id; the command and its arguments are passed as positional parameters so no
-        // shell quoting is needed. Output -> /.mlq/<id>.log, exit code -> /.mlq/<id>.exit.
+        // shell quoting is needed. Output -> /.ferry/<id>.log, exit code -> /.ferry/<id>.exit.
         a.extend([
             "sh".to_string(),
             "-c".to_string(),
-            "exec >>\"/.mlq/$0.log\" 2>&1; \"$@\"; echo $? > \"/.mlq/$0.exit\"".to_string(),
+            "exec >>\"/.ferry/$0.log\" 2>&1; \"$@\"; echo $? > \"/.ferry/$0.exit\"".to_string(),
             job.id.to_string(),
         ]);
         a.extend(job.command.iter().cloned());
@@ -529,7 +529,7 @@ impl Executor for ContainerExecutor {
                 path.to_string_lossy().to_string(),
             ])
             .await?;
-        // podman/docker: "Loaded image: localhost/mlq-task-3:3" (one per line)
+        // podman/docker: "Loaded image: localhost/ferry-task-3:3" (one per line)
         let names: Vec<String> = out
             .lines()
             .filter_map(|l| {
@@ -588,7 +588,7 @@ mod tests {
     use super::*;
     use crate::config::Mount;
     use crate::workspace::Workspace;
-    use mlq_core::{Job, JobState, ResourceRequest};
+    use ferry_core::{Job, JobState, ResourceRequest};
 
     #[test]
     fn builds_podman_args() {
@@ -636,14 +636,14 @@ mod tests {
                 container: "/data".into(),
                 read_only: true,
             }],
-            env: [("MLQ_JOB_ID".to_string(), "7".to_string())]
+            env: [("FERRY_JOB_ID".to_string(), "7".to_string())]
                 .into_iter()
                 .collect(),
             log_path: "/scratch/alice/jobs/7/job.log".into(),
         };
         let args = ex.run_args(&spec);
         let s = args.join(" ");
-        assert!(s.starts_with("run -d --name mlq-7 "));
+        assert!(s.starts_with("run -d --name ferry-7 "));
         assert!(s.contains("--cpus 2 --memory 1073741824b"));
         assert!(s.contains(
             "-v /scratch/alice/jobs/7/work:/work -v /scratch/alice/jobs/7/out:/out -w /work"
@@ -654,9 +654,9 @@ mod tests {
         assert!(!s.contains("--gpus"));
 
         let env = EnvSpec {
-            name: "mlq-task-3".into(),
-            labels: vec![("mlq.task".into(), "3".into())],
-            image: "localhost/mlq-task-3:2".into(),
+            name: "ferry-task-3".into(),
+            labels: vec![("ferry.task".into(), "3".into())],
+            image: "localhost/ferry-task-3:2".into(),
             user_name: "alice".into(),
             resources: ResourceRequest {
                 cpus: 1.5,
@@ -669,17 +669,17 @@ mod tests {
             env: Default::default(),
         };
         let e = ex.env_args(&env).join(" ");
-        assert!(e.starts_with("run -d --init --name mlq-task-3 --label mlq.task=3 --cpus 1.5"));
-        assert!(e.ends_with("localhost/mlq-task-3:2 sleep infinity"));
+        assert!(e.starts_with("run -d --init --name ferry-task-3 --label ferry.task=3 --cpus 1.5"));
+        assert!(e.ends_with("localhost/ferry-task-3:2 sleep infinity"));
         assert!(e.contains("--device nvidia.com/gpu=0"));
         let mut job2 = spec.job.clone();
         job2.command = vec!["python".into(), "train.py".into()];
-        let vars: BTreeMap<String, String> = [("MLQ_JOB_ID".to_string(), "9".to_string())]
+        let vars: BTreeMap<String, String> = [("FERRY_JOB_ID".to_string(), "9".to_string())]
             .into_iter()
             .collect();
         assert_eq!(
             ex.exec_args("abc123", &job2, &vars).join(" "),
-            "exec -d -w /work -e MLQ_JOB_ID=9 abc123 sh -c exec >>\"/.mlq/$0.log\" 2>&1; \"$@\"; echo $? > \"/.mlq/$0.exit\" 7 python train.py"
+            "exec -d -w /work -e FERRY_JOB_ID=9 abc123 sh -c exec >>\"/.ferry/$0.log\" 2>&1; \"$@\"; echo $? > \"/.ferry/$0.exit\" 7 python train.py"
         );
     }
 }

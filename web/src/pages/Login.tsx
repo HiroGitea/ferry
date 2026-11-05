@@ -27,10 +27,10 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
     <div className="flex min-h-screen items-center justify-center bg-bg px-4">
       <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-6 shadow-sm">
         <div>
-          <h1 className="text-lg font-semibold">mlq</h1>
-          <p className="text-sm text-muted-fg">Paste your API token (from <code>mlq token create</code> or your admin).</p>
+          <h1 className="text-lg font-semibold">ferry</h1>
+          <p className="text-sm text-muted-fg">Paste your API token (from <code>ferry token create</code> or your admin).</p>
         </div>
-        <Input type="password" placeholder="mlq_…" value={token} onChange={(e) => setTok(e.target.value)} className="w-full" autoFocus />
+        <Input type="password" placeholder="ferry_…" value={token} onChange={(e) => setTok(e.target.value)} className="w-full" autoFocus />
         {err ? <ErrorBox error={err} /> : null}
         <Button type="submit" variant="primary" className="w-full" disabled={busy || !token.trim()}>
           Sign in

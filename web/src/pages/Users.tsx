@@ -44,7 +44,7 @@ export default function Users() {
             Token for <b>{created.user.name}</b> (shown once):
             <code className="mt-1 block select-all break-all font-mono text-xs">{created.token}</code>
             <div className="mt-1 text-xs text-muted-fg">
-              Log in with: <code>mlq login --url {window.location.origin} --token {created.token}</code>
+              Log in with: <code>ferry login --url {window.location.origin} --token {created.token}</code>
             </div>
           </div>
         )}

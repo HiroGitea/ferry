@@ -4,11 +4,11 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use chrono::{Duration, Utc};
-use mlq_core::api::{
+use ferry_core::api::{
     CreateTokenRequest, CreateUserRequest, DailyUsage, TokenCreated, TokenInfo, UsageQuery,
     UserUsage,
 };
-use mlq_core::{JobState, Quota, User};
+use ferry_core::{JobState, Quota, User};
 
 use super::{ApiError, ApiResult};
 use crate::auth::AuthUser;

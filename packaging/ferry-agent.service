@@ -1,0 +1,35 @@
+# systemd unit for an ferry compute agent (a machine that runs jobs for a control node elsewhere).
+#
+# Install on the compute machine:
+#   sudo useradd -r -m -d /var/lib/ferry -s /usr/bin/nologin ferry && sudo loginctl enable-linger ferry
+#   sudo cp target/release/ferryd /usr/local/bin/
+#   sudo mkdir -p /etc/ferry && sudo cp packaging/ferry-agent.toml /etc/ferry/ferry.toml   # then edit it
+#   sudo cp packaging/ferry-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ferry-agent
+#
+# The agent only needs to reach the control node (e.g. over tailscale) and to be reachable
+# from it on `agent.listen`.
+
+[Unit]
+Description=ferry compute agent
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ferry
+Group=ferry
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/usr/local/bin/ferryd --agent --config /etc/ferry/ferry.toml
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=60
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/ferry
+
+[Install]
+WantedBy=multi-user.target

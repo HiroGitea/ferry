@@ -27,7 +27,7 @@ pub struct SubmitJobRequest {
     pub priority: i32,
     #[serde(default)]
     pub depends_on: Vec<JobId>,
-    /// Array spec like "0-3" or "0,2,5". Expands into one job per index with `MLQ_ARRAY_INDEX` set.
+    /// Array spec like "0-3" or "0,2,5". Expands into one job per index with `FERRY_ARRAY_INDEX` set.
     pub array: Option<String>,
     pub time_limit_secs: Option<u64>,
     /// Submit in `Held` state (release with `POST /jobs/{id}/release`), e.g. while uploading files.
@@ -388,7 +388,7 @@ pub struct ArchiveManifest {
     /// Archive format version.
     pub format: u32,
     pub created_at: DateTime<Utc>,
-    pub mlq_version: String,
+    pub ferry_version: String,
     pub hostname: String,
     pub task: crate::task::Task,
     pub steps: Vec<Job>,

@@ -7,9 +7,9 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use ferry_core::api::{MetricInfo, MetricTick, MetricsQuery, MetricsResult};
 use futures::Stream;
 use futures::stream::StreamExt;
-use mlq_core::api::{MetricInfo, MetricTick, MetricsQuery, MetricsResult};
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use mlq_core::api::Event;
-use mlq_core::{Job, JobState, SnapshotId, Task, TaskId, TaskState};
+use ferry_core::api::Event;
+use ferry_core::{Job, JobState, SnapshotId, Task, TaskId, TaskState};
 use tracing::{error, info, warn};
 
 use crate::executor::EnvSpec;
@@ -28,11 +28,11 @@ use crate::workspace::{Workspace, sanitize_name};
 pub const KEEP_SNAPSHOTS: usize = 5;
 
 pub fn env_name(task_id: TaskId) -> String {
-    format!("mlq-task-{task_id}")
+    format!("ferry-task-{task_id}")
 }
 
 pub fn snapshot_image(task_id: TaskId, seq: i64) -> String {
-    format!("localhost/mlq-task-{task_id}:{seq}")
+    format!("localhost/ferry-task-{task_id}:{seq}")
 }
 
 pub fn publish_task(state: &AppState, task_id: TaskId) {
@@ -99,18 +99,18 @@ pub async fn head_image(state: &AppState, task: &Task) -> (String, Option<Snapsh
 
 fn step_env(task: &Task, job: &Job, gpu_ids: &[u32]) -> BTreeMap<String, String> {
     let mut env = job.env.clone();
-    env.insert("MLQ_JOB_ID".into(), job.id.to_string());
-    env.insert("MLQ_JOB_NAME".into(), job.name.clone());
-    env.insert("MLQ_TASK_ID".into(), task.id.to_string());
-    env.insert("MLQ_TASK_NAME".into(), task.name.clone());
-    env.insert("MLQ_USER".into(), job.user_name.clone());
-    env.insert("MLQ_OUT".into(), "/out".into());
+    env.insert("FERRY_JOB_ID".into(), job.id.to_string());
+    env.insert("FERRY_JOB_NAME".into(), job.name.clone());
+    env.insert("FERRY_TASK_ID".into(), task.id.to_string());
+    env.insert("FERRY_TASK_NAME".into(), task.name.clone());
+    env.insert("FERRY_USER".into(), job.user_name.clone());
+    env.insert("FERRY_OUT".into(), "/out".into());
     if let Some(i) = job.array_index {
-        env.insert("MLQ_ARRAY_INDEX".into(), i.to_string());
+        env.insert("FERRY_ARRAY_INDEX".into(), i.to_string());
     }
     if !gpu_ids.is_empty() {
         env.insert(
-            "MLQ_HOST_GPUS".into(),
+            "FERRY_HOST_GPUS".into(),
             gpu_ids
                 .iter()
                 .map(|g| g.to_string())
@@ -209,8 +209,8 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
         let spec = EnvSpec {
             name: env_name(tid),
             labels: vec![
-                ("mlq.task".into(), tid.to_string()),
-                ("mlq.user".into(), job.user_name.clone()),
+                ("ferry.task".into(), tid.to_string()),
+                ("ferry.user".into(), job.user_name.clone()),
             ],
             image: image.clone(),
             user_name: job.user_name.clone(),

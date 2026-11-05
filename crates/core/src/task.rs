@@ -74,7 +74,7 @@ pub struct Snapshot {
     pub parent_id: Option<SnapshotId>,
     /// Step that produced it.
     pub job_id: Option<i64>,
-    /// Local image reference (e.g. `localhost/mlq-task-3:4`).
+    /// Local image reference (e.g. `localhost/ferry-task-3:4`).
     pub image: String,
     pub size_bytes: Option<u64>,
     pub note: Option<String>,

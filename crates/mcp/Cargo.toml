@@ -1,12 +1,12 @@
 [package]
-name = "mlq-mcp"
+name = "ferry-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-mlq-core.workspace = true
-mlq-client.workspace = true
+ferry-core.workspace = true
+ferry-client.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

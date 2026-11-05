@@ -8,8 +8,8 @@ use std::process::Stdio;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use mlq_core::Job;
-use mlq_core::api::ImageInfo;
+use ferry_core::Job;
+use ferry_core::api::ImageInfo;
 use tokio::process::{Child, Command};
 
 use super::{EnvSpec, Executor, Handle, RunSpec, Usage};
@@ -43,8 +43,8 @@ impl ProcessExecutor {
         cmd.args(args)
             .current_dir(workspace.work())
             .envs(vars)
-            .env("MLQ_WORK", workspace.work())
-            .env("MLQ_OUT", workspace.out())
+            .env("FERRY_WORK", workspace.work())
+            .env("FERRY_OUT", workspace.out())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))

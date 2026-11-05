@@ -1,11 +1,11 @@
 [package]
-name = "mlq-daemon"
+name = "ferry-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "mlqd"
+name = "ferryd"
 path = "src/main.rs"
 
 [features]
@@ -15,8 +15,8 @@ nvml = ["dep:nvml-wrapper"]
 embed-web = []
 
 [dependencies]
-mlq-core.workspace = true
-mlq-mcp.workspace = true
+ferry-core.workspace = true
+ferry-mcp.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -54,4 +54,4 @@ nvml-wrapper = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 reqwest.workspace = true
-mlq-client.workspace = true
+ferry-client.workspace = true

@@ -67,7 +67,7 @@ async fn pull_verified(
 
 /// Copy `/out` and the log of a finished job to `<archive_dir>/<user>/<job_id>/` and record the
 /// location. Idempotent: re-copies if called again.
-pub async fn archive_job(state: &AppState, job: &mlq_core::Job) -> anyhow::Result<PathBuf> {
+pub async fn archive_job(state: &AppState, job: &ferry_core::Job) -> anyhow::Result<PathBuf> {
     let Some(dir) = state.config.retention.archive_dir.clone() else {
         anyhow::bail!("no archive_dir configured");
     };
@@ -93,7 +93,7 @@ pub async fn archive_job(state: &AppState, job: &mlq_core::Job) -> anyhow::Resul
 
 /// Copy a task's `/out` and step logs to `<archive_dir>/<user>/task-<id>/` and record it.
 /// Called after every step, so the archive always mirrors the task's results.
-pub async fn archive_task(state: &AppState, task: &mlq_core::Task) -> anyhow::Result<PathBuf> {
+pub async fn archive_task(state: &AppState, task: &ferry_core::Task) -> anyhow::Result<PathBuf> {
     let Some(root) = state.config.retention.archive_dir.clone() else {
         anyhow::bail!("no archive_dir configured");
     };
@@ -115,10 +115,10 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<SweepReport> {
     let max_scratch = cfg
         .max_scratch
         .as_deref()
-        .and_then(|s| mlq_core::parse_bytes(s).ok());
+        .and_then(|s| ferry_core::parse_bytes(s).ok());
 
     let jobs = state.store.finished_jobs_with_workspace().await?;
-    let mut sized: Vec<(mlq_core::Job, u64)> = Vec::new();
+    let mut sized: Vec<(ferry_core::Job, u64)> = Vec::new();
     for j in jobs {
         let Some(p) = j.workspace_path.as_deref() else {
             continue;

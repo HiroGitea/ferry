@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use mlq_core::api::Event;
-use mlq_core::scheduler::{Decision, SchedulerInput, schedule};
-use mlq_core::{Job, JobId, JobState, UserId};
+use ferry_core::api::Event;
+use ferry_core::scheduler::{Decision, SchedulerInput, schedule};
+use ferry_core::{Job, JobId, JobState, UserId};
 use tracing::{error, info, warn};
 
 use crate::executor::RunSpec;
@@ -62,7 +62,7 @@ pub async fn fair_usage(state: &AppState, active: &[Job]) -> anyhow::Result<Hash
     for j in state.store.finished_jobs_since(since).await? {
         if let Some(fin) = j.finished_at {
             *usage.entry(j.user_id).or_default() +=
-                j.gpu_seconds(now) * mlq_core::fair_share::decay_weight(fin, now, half_life);
+                j.gpu_seconds(now) * ferry_core::fair_share::decay_weight(fin, now, half_life);
         }
     }
     for j in active.iter().filter(|j| j.state.is_active()) {
@@ -289,18 +289,18 @@ async fn launch(state: Arc<AppState>, mut job: Job, node_id: String, gpu_ids: Ve
         }
 
         let mut env: BTreeMap<String, String> = job.env.clone();
-        env.insert("MLQ_JOB_ID".into(), job.id.to_string());
-        env.insert("MLQ_JOB_NAME".into(), job.name.clone());
-        env.insert("MLQ_USER".into(), job.user_name.clone());
-        env.insert("MLQ_OUT".into(), "/out".into());
+        env.insert("FERRY_JOB_ID".into(), job.id.to_string());
+        env.insert("FERRY_JOB_NAME".into(), job.name.clone());
+        env.insert("FERRY_USER".into(), job.user_name.clone());
+        env.insert("FERRY_OUT".into(), "/out".into());
         if let Some(i) = job.array_index {
-            env.insert("MLQ_ARRAY_INDEX".into(), i.to_string());
+            env.insert("FERRY_ARRAY_INDEX".into(), i.to_string());
         }
         if !gpu_ids.is_empty() {
             // Inside the container the assigned GPUs are renumbered from 0 by CDI; expose the
             // host indices for logging purposes only.
             env.insert(
-                "MLQ_HOST_GPUS".into(),
+                "FERRY_HOST_GPUS".into(),
                 gpu_ids
                     .iter()
                     .map(|g| g.to_string())

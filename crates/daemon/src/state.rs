@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use mlq_core::{Job, JobId, Task};
+use ferry_core::{Job, JobId, Task};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 

@@ -50,7 +50,7 @@ pub fn mount(app: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         app.fallback(|| async {
             (
                 axum::http::StatusCode::NOT_FOUND,
-                "mlqd was built without the embedded dashboard (cargo build --features embed-web). The API is at /api/v1.",
+                "ferryd was built without the embedded dashboard (cargo build --features embed-web). The API is at /api/v1.",
             )
         })
     }

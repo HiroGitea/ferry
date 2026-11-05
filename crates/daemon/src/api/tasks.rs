@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use mlq_core::api::{
+use ferry_core::api::{
     ArchiveInfo, ArchiveManifest, CheckoutRequest, CreateTaskRequest, ExportTaskRequest,
     ExportTaskResponse, ImportArchiveRequest, ListTasksQuery, PinSnapshotRequest,
     UpdateTaskRequest,
 };
-use mlq_core::{Job, JobState, Task, TaskDetail, TaskId, TaskState, TaskSummary};
+use ferry_core::{Job, JobState, Task, TaskDetail, TaskId, TaskState, TaskSummary};
 
 use super::{ApiError, ApiResult};
 use crate::auth::AuthUser;

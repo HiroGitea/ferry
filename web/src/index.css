@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Design tokens (light), following the mlq dashboard palette. */
+/* Design tokens (light), following the ferry dashboard palette. */
 :root {
   color-scheme: light;
   --bg: #f9f9f7;

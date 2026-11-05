@@ -20,11 +20,11 @@ pub async fn events(
         match ev {
             Ok(ev) => {
                 let name = match &ev {
-                    mlq_core::api::Event::JobUpdated { .. } => "job",
-                    mlq_core::api::Event::TaskUpdated { .. } => "task",
-                    mlq_core::api::Event::JobLog { .. } => "log",
-                    mlq_core::api::Event::GpusUpdated => "gpus",
-                    mlq_core::api::Event::Heartbeat => "heartbeat",
+                    ferry_core::api::Event::JobUpdated { .. } => "job",
+                    ferry_core::api::Event::TaskUpdated { .. } => "task",
+                    ferry_core::api::Event::JobLog { .. } => "log",
+                    ferry_core::api::Event::GpusUpdated => "gpus",
+                    ferry_core::api::Event::Heartbeat => "heartbeat",
                 };
                 Some(Ok(SseEvent::default()
                     .event(name)

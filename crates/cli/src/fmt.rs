@@ -1,9 +1,9 @@
 use std::io::Write;
 
-use mlq_client::Client;
-use mlq_core::api::{ClusterStatus, GpuInfo, ImageInfo, JobResult, UserUsage};
-use mlq_core::resource::{format_bytes, format_duration};
-use mlq_core::{Job, User};
+use ferry_client::Client;
+use ferry_core::api::{ClusterStatus, GpuInfo, ImageInfo, JobResult, UserUsage};
+use ferry_core::resource::{format_bytes, format_duration};
+use ferry_core::{Job, User};
 use tabled::settings::Style;
 use tabled::{Table, Tabled};
 
@@ -78,7 +78,7 @@ fn truncate(s: &str, n: usize) -> String {
 pub fn print_status(s: &ClusterStatus) {
     if s.nodes.len() > 1 {
         println!(
-            "mlqd {}  {} nodes ({} online)",
+            "ferryd {}  {} nodes ({} online)",
             s.version,
             s.nodes.len(),
             s.nodes.iter().filter(|n| n.online).count()
@@ -101,7 +101,7 @@ pub fn print_status(s: &ClusterStatus) {
         return;
     }
     println!(
-        "node      {} ({})  mlqd {}  runtime {}",
+        "node      {} ({})  ferryd {}  runtime {}",
         s.node.hostname, s.node.id, s.version, s.node.runtime
     );
     println!(
@@ -153,7 +153,7 @@ struct NodeRow {
     mounts: String,
 }
 
-pub fn print_nodes(nodes: &[mlq_core::api::NodeStatus]) {
+pub fn print_nodes(nodes: &[ferry_core::api::NodeStatus]) {
     let rows: Vec<NodeRow> = nodes
         .iter()
         .map(|n| NodeRow {
@@ -417,9 +417,9 @@ struct TaskRow {
     last: String,
 }
 
-pub fn print_tasks(tasks: &[mlq_core::TaskSummary]) {
+pub fn print_tasks(tasks: &[ferry_core::TaskSummary]) {
     if tasks.is_empty() {
-        println!("no tasks (create one with `mlq task create <name>`)");
+        println!("no tasks (create one with `ferry task create <name>`)");
         return;
     }
     let rows: Vec<TaskRow> = tasks
@@ -488,7 +488,7 @@ struct SnapRow {
     note: String,
 }
 
-pub fn print_task(d: &mlq_core::TaskDetail) {
+pub fn print_task(d: &ferry_core::TaskDetail) {
     let t = &d.summary.task;
     println!(
         "task {} \"{}\"  user={}  state={}  activity={}",
@@ -583,7 +583,7 @@ fn fmt_value(v: f32, unit: &str) -> String {
     }
 }
 
-pub fn print_metrics(r: &mlq_core::api::MetricsResult) {
+pub fn print_metrics(r: &ferry_core::api::MetricsResult) {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     println!(
         "{} points, {}s each (tier {})",
@@ -633,7 +633,7 @@ pub fn print_metrics(r: &mlq_core::api::MetricsResult) {
     }
 }
 
-pub fn print_export(r: &mlq_core::api::ExportTaskResponse) {
+pub fn print_export(r: &ferry_core::api::ExportTaskResponse) {
     let m = &r.manifest;
     println!(
         "archived task {} \"{}\" -> {}",
@@ -677,9 +677,9 @@ struct ArchiveRow {
     modified: String,
 }
 
-pub fn print_archives(a: &[mlq_core::api::ArchiveInfo]) {
+pub fn print_archives(a: &[ferry_core::api::ArchiveInfo]) {
     if a.is_empty() {
-        println!("no archives (tasks are archived on close, or with `mlq task export <id>`)");
+        println!("no archives (tasks are archived on close, or with `ferry task export <id>`)");
         return;
     }
     let rows: Vec<ArchiveRow> = a
@@ -695,16 +695,16 @@ pub fn print_archives(a: &[mlq_core::api::ArchiveInfo]) {
     println!("{}", Table::new(rows).with(Style::blank()));
 }
 
-pub fn print_manifest(m: &mlq_core::api::ArchiveManifest) {
+pub fn print_manifest(m: &ferry_core::api::ArchiveManifest) {
     let t = &m.task;
     println!(
-        "task {} \"{}\"  user={}  exported {} from {} (mlq {})",
+        "task {} \"{}\"  user={}  exported {} from {} (ferry {})",
         t.id,
         t.name,
         t.user_name,
         m.created_at.format("%Y-%m-%d %H:%M"),
         m.hostname,
-        m.mlq_version
+        m.ferry_version
     );
     println!(
         "base image {}   HEAD {}   {} files, {}",

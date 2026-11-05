@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use mlq_core::api::{MetricInfo, MetricSeries, MetricTick, MetricsResult};
+use ferry_core::api::{MetricInfo, MetricSeries, MetricTick, MetricsResult};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};

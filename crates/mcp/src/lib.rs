@@ -1,17 +1,17 @@
-//! MCP server exposing mlq to AI agents (Claude Code, Claude Desktop, Codex, ...).
+//! MCP server exposing ferry to AI agents (Claude Code, Claude Desktop, Codex, ...).
 //!
 //! The same tool set is served two ways:
-//! * `mlq mcp serve` — stdio transport; one fixed client (URL + token from the CLI config).
-//! * `mlqd` `/mcp` — Streamable HTTP; the bearer token of each HTTP request selects the user.
+//! * `ferry mcp serve` — stdio transport; one fixed client (URL + token from the CLI config).
+//! * `ferryd` `/mcp` — Streamable HTTP; the bearer token of each HTTP request selects the user.
 //!   Tools call back into the daemon's own REST API over loopback, so there is one code path.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mlq_client::Client;
-use mlq_core::api::{ListJobsQuery, SubmitJobRequest, UsageQuery};
-use mlq_core::{JobState, ResourceOverrides};
+use ferry_client::Client;
+use ferry_core::api::{ListJobsQuery, SubmitJobRequest, UsageQuery};
+use ferry_core::{JobState, ResourceOverrides};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ProgressNotificationParam};
 use rmcp::service::RequestContext;
@@ -22,7 +22,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-pub const INSTRUCTIONS: &str = "mlq schedules containerised ML jobs on a shared GPU server. \
+pub const INSTRUCTIONS: &str = "ferry schedules containerised ML jobs on a shared GPU server. \
 Each job runs in its own container (default image: PyTorch + CUDA) with /work (inputs, cwd) and /out (results) mounted; \
 shared datasets are mounted read-only (usually /data). Nothing a job does affects the host. \
 Use cluster_status to see free GPUs/CPUs/memory, submit_job (dry_run=true by default) or run_job to execute, \
@@ -41,7 +41,7 @@ enum Mode {
 }
 
 #[derive(Clone)]
-pub struct MlqServer {
+pub struct FerryServer {
     mode: Mode,
     limiter: Arc<Mutex<Vec<Instant>>>,
 }
@@ -223,11 +223,11 @@ fn build_request(
     task_id: Option<i64>,
 ) -> Result<SubmitJobRequest, String> {
     let mem_bytes = match mem {
-        Some(m) => Some(mlq_core::parse_bytes(&m).map_err(|e| e.to_string())?),
+        Some(m) => Some(ferry_core::parse_bytes(&m).map_err(|e| e.to_string())?),
         None => None,
     };
     let time_limit_secs = match time_limit {
-        Some(t) => Some(mlq_core::parse_duration_secs(&t).map_err(|e| e.to_string())?),
+        Some(t) => Some(ferry_core::parse_duration_secs(&t).map_err(|e| e.to_string())?),
         None => None,
     };
     Ok(SubmitJobRequest {
@@ -253,7 +253,7 @@ fn build_request(
 }
 
 #[tool_router]
-impl MlqServer {
+impl FerryServer {
     fn client_for(&self, ctx: &RequestContext<RoleServer>) -> Result<Client, McpError> {
         match &self.mode {
             Mode::Fixed(c) => Ok(c.clone()),
@@ -597,11 +597,11 @@ impl MlqServer {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let c = self.client_for(&ctx)?;
-        let mem_bytes = match p.mem.as_deref().map(mlq_core::parse_bytes).transpose() {
+        let mem_bytes = match p.mem.as_deref().map(ferry_core::parse_bytes).transpose() {
             Ok(m) => m,
             Err(e) => return Ok(err_result(e)),
         };
-        let req = mlq_core::api::CreateTaskRequest {
+        let req = ferry_core::api::CreateTaskRequest {
             name: p.name,
             image: p.image,
             resources: ResourceOverrides {
@@ -686,7 +686,7 @@ impl MlqServer {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let c = self.client_for(&ctx)?;
-        let req = mlq_core::api::ExportTaskRequest {
+        let req = ferry_core::api::ExportTaskRequest {
             images: p.images,
             offload: false,
         };
@@ -719,7 +719,7 @@ impl MlqServer {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let c = self.client_for(&ctx)?;
-        let req = mlq_core::api::ImportArchiveRequest {
+        let req = ferry_core::api::ImportArchiveRequest {
             name: p.name,
             task_name: p.task_name,
             node: None,
@@ -752,7 +752,7 @@ impl MlqServer {
             }
         };
         let since = p.since_secs.unwrap_or(600).clamp(10, 90 * 86400);
-        let q = mlq_core::api::MetricsQuery {
+        let q = ferry_core::api::MetricsQuery {
             keys,
             after: Some(-since),
             before: None,
@@ -784,7 +784,7 @@ fn chrono_days_ago(days: u32) -> chrono::DateTime<chrono::Utc> {
 }
 
 #[tool_handler]
-impl ServerHandler for MlqServer {
+impl ServerHandler for FerryServer {
     fn get_info(&self) -> rmcp::model::ServerConfig {
         rmcp::model::ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
@@ -792,14 +792,14 @@ impl ServerHandler for MlqServer {
                 .build(),
         )
         .with_server_info(rmcp::model::Implementation::new(
-            "mlq",
+            "ferry",
             env!("CARGO_PKG_VERSION"),
         ))
         .with_instructions(INSTRUCTIONS)
     }
 }
 
-impl MlqServer {
+impl FerryServer {
     pub fn with_client(client: Client) -> Self {
         Self {
             mode: Mode::Fixed(client),
@@ -817,7 +817,7 @@ impl MlqServer {
 
 /// Serve over stdio until the client disconnects.
 pub async fn serve_stdio(client: Client) -> anyhow::Result<()> {
-    let service = MlqServer::with_client(client)
+    let service = FerryServer::with_client(client)
         .serve(rmcp::transport::stdio())
         .await?;
     service.waiting().await?;
@@ -825,13 +825,13 @@ pub async fn serve_stdio(client: Client) -> anyhow::Result<()> {
 }
 
 /// Tower service for mounting at `/mcp` in an axum router.
-pub fn http_service(base_url: String) -> StreamableHttpService<MlqServer, LocalSessionManager> {
+pub fn http_service(base_url: String) -> StreamableHttpService<FerryServer, LocalSessionManager> {
     let config = StreamableHttpServerConfig::default()
         .disable_allowed_hosts()
         .disable_allowed_origins()
         .with_sse_keep_alive(Some(Duration::from_secs(15)));
     StreamableHttpService::new(
-        move || Ok(MlqServer::per_request(base_url.clone())),
+        move || Ok(FerryServer::per_request(base_url.clone())),
         Arc::new(LocalSessionManager::default()),
         config,
     )

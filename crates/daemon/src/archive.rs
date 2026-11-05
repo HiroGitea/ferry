@@ -24,8 +24,8 @@ use std::process::Stdio;
 
 use anyhow::{Context, bail};
 use chrono::Utc;
-use mlq_core::api::{ArchiveImage, ArchiveInfo, ArchiveManifest, ExportTaskResponse};
-use mlq_core::{Snapshot, Task, TaskState};
+use ferry_core::api::{ArchiveImage, ArchiveInfo, ArchiveManifest, ExportTaskResponse};
+use ferry_core::{Snapshot, Task, TaskState};
 use sha2::Digest;
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -147,14 +147,14 @@ fn readme(m: &ArchiveManifest) -> String {
     let mut s = String::new();
     let t = &m.task;
     s.push_str(&format!(
-        "mlq task archive — task #{} \"{}\" by {}\n",
+        "ferry task archive — task #{} \"{}\" by {}\n",
         t.id, t.name, t.user_name
     ));
     s.push_str(&format!(
-        "exported {} from {} (mlq {})\n\n",
+        "exported {} from {} (ferry {})\n\n",
         m.created_at.format("%Y-%m-%d %H:%M:%S UTC"),
         m.hostname,
-        m.mlq_version
+        m.ferry_version
     ));
     s.push_str(&format!("base image : {}\n", t.base_image));
     s.push_str(&format!(
@@ -197,7 +197,7 @@ fn readme(m: &ArchiveManifest) -> String {
             if i.is_head { "  (HEAD)" } else { "" }
         ));
     }
-    s.push_str("\nrestore with mlq:   mlq archive import <this file>\n");
+    s.push_str("\nrestore with ferry:   ferry archive import <this file>\n");
     s.push_str("restore by hand:    podman load -i env/<file>.oci.tar ; podman run -it -v $PWD/work:/work -v $PWD/out:/out <image> bash\n");
     s.push_str(
         "layout: manifest.json steps.jsonl env/ work/ out/ logs/<step>.log metrics/task.csv\n",
@@ -376,7 +376,7 @@ async fn build(
     let manifest = ArchiveManifest {
         format: FORMAT,
         created_at: Utc::now(),
-        mlq_version: crate::VERSION.into(),
+        ferry_version: crate::VERSION.into(),
         hostname,
         task: task.clone(),
         steps,
@@ -506,7 +506,7 @@ pub async fn read_manifest(state: &AppState, path: &Path) -> anyhow::Result<Arch
     let m: ArchiveManifest = serde_json::from_str(&out).context("parsing manifest.json")?;
     if m.format > FORMAT {
         bail!(
-            "archive format {} is newer than this mlq ({FORMAT})",
+            "archive format {} is newer than this ferry ({FORMAT})",
             m.format
         );
     }
@@ -645,7 +645,7 @@ async fn restore(
             let src = loaded.first().cloned().unwrap_or_else(|| img.image.clone());
             let tag = crate::tasks::snapshot_image(task.id, 1);
             node.executor.tag_image(&src, &tag).await?;
-            if src != tag && src.starts_with("localhost/mlq-task-") {
+            if src != tag && src.starts_with("localhost/ferry-task-") {
                 let _ = node.executor.remove_image(&src).await;
             }
             let snap = state

@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use clap::Args;
-use mlq_client::Client;
-use mlq_core::Job;
-use mlq_core::api::SubmitJobRequest;
-use mlq_core::resource::ResourceOverrides;
+use ferry_client::Client;
+use ferry_core::Job;
+use ferry_core::api::SubmitJobRequest;
+use ferry_core::resource::ResourceOverrides;
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct SubmitArgs {
@@ -25,7 +25,7 @@ pub struct SubmitArgs {
     /// Run as the next step of this task (environment saved between steps)
     #[arg(short = 'T', long = "task")]
     pub task: Option<i64>,
-    /// Run on this node only (see `mlq node list`)
+    /// Run on this node only (see `ferry node list`)
     #[arg(short = 'N', long)]
     pub node: Option<String>,
     /// Container image
@@ -40,7 +40,7 @@ pub struct SubmitArgs {
     /// Start only after these jobs succeed
     #[arg(long = "after", value_delimiter = ',')]
     pub depends_on: Vec<i64>,
-    /// Job array, e.g. 0-3 or 0,2,5 (sets MLQ_ARRAY_INDEX)
+    /// Job array, e.g. 0-3 or 0,2,5 (sets FERRY_ARRAY_INDEX)
     #[arg(long)]
     pub array: Option<String>,
     /// Environment variable KEY=VALUE (repeatable)
@@ -55,17 +55,17 @@ pub struct SubmitArgs {
     /// Validate and show the scheduling estimate without submitting
     #[arg(long)]
     pub dry_run: bool,
-    /// Command (after `--`), or a single script path whose `#MLQ` lines carry options
+    /// Command (after `--`), or a single script path whose `#FERRY` lines carry options
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 }
 
-/// Parse `#MLQ --gpus 1 --mem 16G` directive lines from a script.
+/// Parse `#FERRY --gpus 1 --mem 16G` directive lines from a script.
 pub fn parse_directives(script: &str) -> anyhow::Result<Vec<String>> {
     let mut out = Vec::new();
     for line in script.lines() {
         let l = line.trim();
-        if let Some(rest) = l.strip_prefix("#MLQ ") {
+        if let Some(rest) = l.strip_prefix("#FERRY ") {
             out.extend(shell_words(rest)?);
         }
     }
@@ -119,7 +119,7 @@ fn tar_gz(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
 pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec<PathBuf>)> {
     let mut args = args.clone();
     let mut uploads = args.upload.clone();
-    // Script mode: `mlq submit train.sh`
+    // Script mode: `ferry submit train.sh`
     let first = args.command.first().cloned().unwrap_or_default();
     let is_script = (first.ends_with(".sh") || first.ends_with(".py"))
         && std::path::Path::new(&first).is_file();
@@ -129,7 +129,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         let text = std::fs::read_to_string(&path)?;
         let directives = parse_directives(&text)?;
         if !directives.is_empty() {
-            let mut argv = vec!["mlq-directives".to_string()];
+            let mut argv = vec!["ferry-directives".to_string()];
             argv.extend(directives);
             #[derive(clap::Parser)]
             struct Directives {
@@ -137,7 +137,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
                 args: SubmitArgs,
             }
             let parsed = <Directives as clap::Parser>::try_parse_from(&argv)
-                .context("parsing #MLQ directives")?
+                .context("parsing #FERRY directives")?
                 .args;
             // Directives provide defaults; explicit CLI flags are not distinguishable from defaults here,
             // so directives win only for fields left at their default on the command line.
@@ -178,7 +178,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         args.command.extend(extra_args);
     }
     if args.command.is_empty() {
-        bail!("no command given (use `mlq submit [opts] -- cmd args...`)");
+        bail!("no command given (use `ferry submit [opts] -- cmd args...`)");
     }
     let mut env = BTreeMap::new();
     for kv in &args.env {
@@ -194,7 +194,11 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         env,
         resources: ResourceOverrides {
             cpus: args.cpus,
-            mem_bytes: args.mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
+            mem_bytes: args
+                .mem
+                .as_deref()
+                .map(ferry_core::parse_bytes)
+                .transpose()?,
             gpus: args.gpus,
         },
         priority: args.priority,
@@ -203,7 +207,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         time_limit_secs: args
             .time
             .as_deref()
-            .map(mlq_core::parse_duration_secs)
+            .map(ferry_core::parse_duration_secs)
             .transpose()?,
         hold: args.hold || !uploads.is_empty(),
         files: BTreeMap::new(),

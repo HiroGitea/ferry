@@ -53,7 +53,11 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
             }
         };
-        (status, axum::Json(mlq_core::api::ErrorBody { error: msg })).into_response()
+        (
+            status,
+            axum::Json(ferry_core::api::ErrorBody { error: msg }),
+        )
+            .into_response()
     }
 }
 
@@ -122,7 +126,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // with the caller's token, so per-user permissions and quotas apply unchanged.
     let self_url = format!("http://{}", loopback_addr(&state.config.listen));
     let mcp = Router::new()
-        .nest_service("/mcp", mlq_mcp::http_service(self_url))
+        .nest_service("/mcp", ferry_mcp::http_service(self_url))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,

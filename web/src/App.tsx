@@ -18,7 +18,7 @@ import { ChartSyncProvider, MetricStreamProvider } from "./charts/sync";
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => {
     try {
-      return localStorage.getItem("mlq.theme") ?? "auto";
+      return localStorage.getItem("ferry.theme") ?? "auto";
     } catch {
       return "auto";
     }
@@ -27,7 +27,7 @@ function useTheme() {
     if (theme === "auto") document.documentElement.removeAttribute("data-theme");
     else document.documentElement.setAttribute("data-theme", theme);
     try {
-      localStorage.setItem("mlq.theme", theme);
+      localStorage.setItem("ferry.theme", theme);
     } catch {
       /* ignore */
     }
@@ -71,7 +71,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="flex min-h-screen bg-bg text-fg">
       <aside className="hidden w-52 shrink-0 flex-col border-r border-border bg-card p-3 sm:flex">
-        <div className="mb-4 px-2 text-lg font-semibold tracking-tight">mlq</div>
+        <div className="mb-4 px-2 text-lg font-semibold tracking-tight">ferry</div>
         <nav className="space-y-0.5">
           {nav.map((n) => (
             <NavLink
