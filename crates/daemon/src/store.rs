@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use ferry_core::api::TokenInfo;
+use ferry_core::api::{InviteInfo, InvitePreview, TokenInfo};
 use ferry_core::{
     Job, JobId, JobState, Quota, ResourceRequest, Role, Snapshot, SnapshotId, Task, TaskId,
     TaskState, User, UserId,
@@ -144,6 +144,35 @@ pub fn generate_token() -> String {
         "ferry_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
+}
+
+pub fn generate_invite_code() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut bytes = [0u8; 24];
+    rand::rng().fill_bytes(&mut bytes);
+    format!(
+        "inv_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    )
+}
+
+pub struct NewInvite<'a> {
+    pub role: Role,
+    pub name: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub max_uses: u32,
+    pub expires_at: DateTime<Utc>,
+    pub created_by: Option<UserId>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RegisterError {
+    /// Unknown, expired, revoked or used up.
+    InvalidInvite,
+    NameTaken,
+    /// The invite is locked to another name.
+    NameMismatch(String),
 }
 
 impl Store {
@@ -326,6 +355,164 @@ impl Store {
             .execute(&self.pool)
             .await;
         self.user_by_id(user_id).await
+    }
+
+    // ---- invites ----
+
+    /// Returns (plaintext code, invite).
+    pub async fn create_invite(&self, new: &NewInvite<'_>) -> anyhow::Result<(String, InviteInfo)> {
+        let code = generate_invite_code();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO invites (hash, role, user_name, note, max_uses, expires_at, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(hash_token(&code))
+        .bind(new.role.as_str())
+        .bind(new.name)
+        .bind(new.note)
+        .bind(new.max_uses as i64)
+        .bind(new.expires_at)
+        .bind(new.created_by)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await?;
+        let invite = self
+            .list_invites()
+            .await?
+            .into_iter()
+            .find(|i| i.id == id)
+            .context("invite vanished")?;
+        Ok((code, invite))
+    }
+
+    pub async fn list_invites(&self) -> anyhow::Result<Vec<InviteInfo>> {
+        let rows = sqlx::query(
+            "SELECT i.*, u.name AS creator,
+                    (SELECT group_concat(name, ',') FROM users WHERE invite_id = i.id) AS used_by
+             FROM invites i LEFT JOIN users u ON u.id = i.created_by ORDER BY i.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| InviteInfo {
+                id: r.get("id"),
+                role: Role::parse(r.get("role")).unwrap_or(Role::User),
+                name: r.get("user_name"),
+                note: r.get("note"),
+                max_uses: r.get::<i64, _>("max_uses") as u32,
+                uses: r.get::<i64, _>("uses") as u32,
+                expires_at: r.get("expires_at"),
+                created_by: r.get("creator"),
+                created_at: r.get("created_at"),
+                used_by: r
+                    .get::<Option<String>, _>("used_by")
+                    .map(|s| s.split(',').map(str::to_string).collect())
+                    .unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    pub async fn delete_invite(&self, id: i64) -> anyhow::Result<bool> {
+        let r = sqlx::query("DELETE FROM invites WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// What a still-usable invite allows; None if unknown, expired or used up.
+    pub async fn preview_invite(&self, code: &str) -> anyhow::Result<Option<InvitePreview>> {
+        let row = sqlx::query(
+            "SELECT role, user_name, max_uses, uses, expires_at FROM invites WHERE hash = ?",
+        )
+        .bind(hash_token(code))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|r| {
+            let expires_at: DateTime<Utc> = r.get("expires_at");
+            let left = r.get::<i64, _>("max_uses") - r.get::<i64, _>("uses");
+            (expires_at > Utc::now() && left > 0).then(|| InvitePreview {
+                role: Role::parse(r.get("role")).unwrap_or(Role::User),
+                name: r.get("user_name"),
+                expires_at,
+                remaining_uses: left as u32,
+            })
+        }))
+    }
+
+    /// Consume one use of an invite and create the user plus a first token, atomically:
+    /// a taken name or a race on the last use leaves the invite untouched.
+    pub async fn register_with_invite(
+        &self,
+        code: &str,
+        name: &str,
+        token_name: &str,
+    ) -> anyhow::Result<Result<(User, String, i64), RegisterError>> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT id, role, user_name, max_uses, uses, expires_at FROM invites WHERE hash = ?",
+        )
+        .bind(hash_token(code))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(Err(RegisterError::InvalidInvite));
+        };
+        let invite_id: i64 = row.get("id");
+        let expires_at: DateTime<Utc> = row.get("expires_at");
+        if expires_at <= Utc::now() || row.get::<i64, _>("uses") >= row.get::<i64, _>("max_uses") {
+            return Ok(Err(RegisterError::InvalidInvite));
+        }
+        if let Some(fixed) = row.get::<Option<String>, _>("user_name")
+            && fixed != name
+        {
+            return Ok(Err(RegisterError::NameMismatch(fixed)));
+        }
+        let role = Role::parse(row.get("role")).unwrap_or(Role::User);
+        let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if taken.is_some() {
+            return Ok(Err(RegisterError::NameTaken));
+        }
+        let used =
+            sqlx::query("UPDATE invites SET uses = uses + 1 WHERE id = ? AND uses < max_uses")
+                .bind(invite_id)
+                .execute(&mut *tx)
+                .await?;
+        if used.rows_affected() == 0 {
+            return Ok(Err(RegisterError::InvalidInvite));
+        }
+        let now = Utc::now();
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, role, created_at, invite_id) VALUES (?, ?, ?, ?) RETURNING id",
+        )
+        .bind(name)
+        .bind(role.as_str())
+        .bind(now)
+        .bind(invite_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let token = generate_token();
+        let token_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tokens (user_id, hash, name, created_at) VALUES (?, ?, ?, ?) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(hash_token(&token))
+        .bind(token_name)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let user = User {
+            id: user_id,
+            name: name.to_string(),
+            role,
+            created_at: now,
+        };
+        Ok(Ok((user, token, token_id)))
     }
 
     // ---- quotas ----
@@ -1115,5 +1302,116 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(r.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::*;
+
+    async fn invite(store: &Store, max_uses: u32, ttl_secs: i64, name: Option<&str>) -> String {
+        store
+            .create_invite(&NewInvite {
+                role: Role::User,
+                name,
+                note: Some("test"),
+                max_uses,
+                expires_at: Utc::now() + chrono::Duration::seconds(ttl_secs),
+                created_by: None,
+            })
+            .await
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn single_use_invite() {
+        let store = Store::open_memory().await.unwrap();
+        let code = invite(&store, 1, 3600, None).await;
+        assert!(store.preview_invite(&code).await.unwrap().is_some());
+        let (user, token, _) = store
+            .register_with_invite(&code, "alice", "registration")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.role, Role::User);
+        assert_eq!(
+            store.user_for_token(&token).await.unwrap().unwrap().name,
+            "alice"
+        );
+        assert_eq!(
+            store
+                .register_with_invite(&code, "bob", "r")
+                .await
+                .unwrap()
+                .err(),
+            Some(RegisterError::InvalidInvite)
+        );
+        assert!(store.preview_invite(&code).await.unwrap().is_none());
+        let list = store.list_invites().await.unwrap();
+        assert_eq!(
+            (list[0].uses, list[0].used_by.clone()),
+            (1, vec!["alice".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn taken_name_does_not_consume() {
+        let store = Store::open_memory().await.unwrap();
+        store.create_user("alice", Role::User).await.unwrap();
+        let code = invite(&store, 1, 3600, None).await;
+        assert_eq!(
+            store
+                .register_with_invite(&code, "alice", "r")
+                .await
+                .unwrap()
+                .err(),
+            Some(RegisterError::NameTaken)
+        );
+        assert!(
+            store
+                .register_with_invite(&code, "bob", "r")
+                .await
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_locked_and_unknown() {
+        let store = Store::open_memory().await.unwrap();
+        let old = invite(&store, 5, -1, None).await;
+        assert_eq!(
+            store
+                .register_with_invite(&old, "a", "r")
+                .await
+                .unwrap()
+                .err(),
+            Some(RegisterError::InvalidInvite)
+        );
+        let locked = invite(&store, 1, 3600, Some("carol")).await;
+        assert_eq!(
+            store
+                .register_with_invite(&locked, "dave", "r")
+                .await
+                .unwrap()
+                .err(),
+            Some(RegisterError::NameMismatch("carol".into()))
+        );
+        assert!(
+            store
+                .register_with_invite(&locked, "carol", "r")
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(
+            store
+                .register_with_invite("inv_nope", "x", "r")
+                .await
+                .unwrap()
+                .err(),
+            Some(RegisterError::InvalidInvite)
+        );
     }
 }

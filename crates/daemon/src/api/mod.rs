@@ -97,6 +97,11 @@ pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/tokens", get(admin::list_tokens).post(admin::create_token))
         .route("/tokens/{id}", delete(admin::delete_token))
+        .route(
+            "/invites",
+            get(admin::list_invites).post(admin::create_invite),
+        )
+        .route("/invites/{id}", delete(admin::delete_invite))
         .route("/usage", get(admin::usage))
         .route("/retention/sweep", post(admin::sweep))
         .route("/events", get(sse::events))
@@ -138,8 +143,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.clone(),
             nodes::require_node_token,
         ));
+    // Registration with an invite code is the only unauthenticated API.
+    let public = Router::new()
+        .route("/api/v1/invite", get(admin::preview_invite))
+        .route("/api/v1/register", post(admin::register));
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .merge(public)
         .merge(agents)
         .nest("/api/v1", api_v1(state.clone()))
         .merge(mcp);

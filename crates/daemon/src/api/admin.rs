@@ -5,14 +5,30 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use chrono::{Duration, Utc};
 use ferry_core::api::{
-    CreateTokenRequest, CreateUserRequest, DailyUsage, TokenCreated, TokenInfo, UsageQuery,
-    UserUsage,
+    CreateInviteRequest, CreateTokenRequest, CreateUserRequest, DailyUsage, InviteCreated,
+    InviteInfo, InvitePreview, RegisterRequest, TokenCreated, TokenInfo, UsageQuery, UserUsage,
 };
 use ferry_core::{JobState, Quota, User};
 
 use super::{ApiError, ApiResult};
 use crate::auth::AuthUser;
 use crate::state::AppState;
+use crate::store::{NewInvite, RegisterError};
+
+fn valid_user_name(raw: &str) -> Result<&str, ApiError> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::BadRequest(
+            "user name must be 1-64 chars of [A-Za-z0-9._-]".into(),
+        ));
+    }
+    Ok(name)
+}
 
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
@@ -28,17 +44,7 @@ pub async fn create_user(
     Json(req): Json<CreateUserRequest>,
 ) -> ApiResult<TokenCreated> {
     user.require_admin()?;
-    let name = req.name.trim();
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err(ApiError::BadRequest(
-            "user name must be 1-64 chars of [A-Za-z0-9._-]".into(),
-        ));
-    }
+    let name = valid_user_name(&req.name)?;
     if state.store.user_by_name(name).await?.is_some() {
         return Err(ApiError::Conflict(format!("user {name} exists")));
     }
@@ -283,4 +289,123 @@ pub async fn sweep(
 ) -> ApiResult<crate::retention::SweepReport> {
     user.require_admin()?;
     Ok(Json(crate::retention::sweep(&state).await?))
+}
+
+// ---- invites ----
+
+const DEFAULT_INVITE_TTL: u64 = 7 * 24 * 3600;
+const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
+
+pub async fn list_invites(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+) -> ApiResult<Vec<InviteInfo>> {
+    user.require_admin()?;
+    Ok(Json(state.store.list_invites().await?))
+}
+
+pub async fn create_invite(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(req): Json<CreateInviteRequest>,
+) -> ApiResult<InviteCreated> {
+    user.require_admin()?;
+    let name = match req.name.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(n) => {
+            let n = valid_user_name(n)?;
+            if state.store.user_by_name(n).await?.is_some() {
+                return Err(ApiError::Conflict(format!("user {n} exists")));
+            }
+            Some(n)
+        }
+    };
+    let max_uses = req.max_uses.unwrap_or(1);
+    if !(1..=1000).contains(&max_uses) || (name.is_some() && max_uses != 1) {
+        return Err(ApiError::BadRequest(
+            "max_uses must be 1-1000 (and 1 for an invite locked to a name)".into(),
+        ));
+    }
+    let ttl = req.expires_in_secs.unwrap_or(DEFAULT_INVITE_TTL);
+    if ttl == 0 || ttl > MAX_INVITE_TTL {
+        return Err(ApiError::BadRequest(
+            "expiry must be between 1s and 90 days".into(),
+        ));
+    }
+    let note = req.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let (code, invite) = state
+        .store
+        .create_invite(&NewInvite {
+            role: req.role.unwrap_or(ferry_core::Role::User),
+            name,
+            note,
+            max_uses,
+            expires_at: Utc::now() + Duration::seconds(ttl as i64),
+            created_by: Some(user.0.id),
+        })
+        .await?;
+    Ok(Json(InviteCreated { invite, code }))
+}
+
+pub async fn delete_invite(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> ApiResult<serde_json::Value> {
+    user.require_admin()?;
+    if !state.store.delete_invite(id).await? {
+        return Err(ApiError::NotFound(format!("invite {id}")));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CodeQuery {
+    code: String,
+}
+
+/// Public (no token): lets the registration page show what an invite grants.
+pub async fn preview_invite(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<CodeQuery>,
+) -> ApiResult<InvitePreview> {
+    state
+        .store
+        .preview_invite(q.code.trim())
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound("invite is invalid, expired or used up".into()))
+}
+
+/// Public (no token): create an account with an invite code and return its first token.
+pub async fn register(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RegisterRequest>,
+) -> ApiResult<TokenCreated> {
+    let name = valid_user_name(&req.name)?;
+    let token_name = req
+        .token_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("registration");
+    match state
+        .store
+        .register_with_invite(req.code.trim(), name, token_name)
+        .await?
+    {
+        Ok((user, token, id)) => {
+            tracing::info!(user = %user.name, role = user.role.as_str(), "user registered with invite");
+            Ok(Json(TokenCreated { id, user, token }))
+        }
+        Err(RegisterError::InvalidInvite) => Err(ApiError::NotFound(
+            "invite is invalid, expired or used up".into(),
+        )),
+        Err(RegisterError::NameTaken) => {
+            Err(ApiError::Conflict(format!("user name {name} is taken")))
+        }
+        Err(RegisterError::NameMismatch(n)) => Err(ApiError::BadRequest(format!(
+            "this invite is for user name {n}"
+        ))),
+    }
 }

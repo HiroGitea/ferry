@@ -6,6 +6,7 @@ import { api, getToken, setToken } from "./api";
 import { useLiveUpdates } from "./hooks";
 import { cn } from "./components/ui";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Usage from "./pages/Usage";
 import Jobs from "./pages/Jobs";
 import Gpus from "./pages/Gpus";
@@ -37,6 +38,7 @@ function useTheme() {
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getToken());
+  if (window.location.pathname === "/register") return <Register />;
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   return (
     <MetricStreamProvider>
@@ -150,7 +152,8 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Route path="/usage" element={<Usage isAdmin={!!isAdmin} />} />
             <Route path="/jobs" element={<Jobs isAdmin={!!isAdmin} />} />
             <Route path="/gpus" element={<Gpus />} />
-            {isAdmin && <Route path="/users" element={<Users />} />}
+            {/* Wait for /me before deciding, so a reload on /users does not bounce admins away. */}
+            <Route path="/users" element={me.isLoading ? null : isAdmin ? <Users /> : <Navigate to="/monitor" replace />} />
             <Route path="*" element={<Navigate to="/monitor" replace />} />
           </Routes>
         </main>

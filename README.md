@@ -79,6 +79,7 @@ sudo cp packaging/ferryd.service /etc/systemd/system/ && sudo systemctl daemon-r
 ```
 
 The first start creates an `admin` user; its token is in `/var/lib/ferry/admin.token`.
+Add people with invite links (below) or `ferry user add <name>`.
 A PKGBUILD is in `packaging/` (`cd packaging && makepkg -si`).
 
 ### Configuration highlights (`/etc/ferry/ferry.toml`)
@@ -114,9 +115,31 @@ with a shared token, so keep it inside tailscale or a trusted LAN (or put a TLS 
 
 ## Usage
 
+### Users
+
+An admin creates an invite link (dashboard → Users → Invite links, or the CLI); the new user opens it,
+picks a name and gets their API token, which works for the CLI, the dashboard and Claude alike.
+
+```bash
+ferry invite create --uses 5 --expires 7d --note "lab"     # --name alice locks it to one name, --admin
+```
+
+```bash
+ferry register 'http://server:7070/register?code=inv_...'  # the new user: creates the account and logs in
+```
+
+```bash
+ferry invite list ; ferry invite rm <id> ; ferry token create --name laptop
+```
+
+Links are single-use by default, expire after 7 days (90 at most) and only their hash is stored. Existing
+users log in with a token:
+
 ```bash
 ferry login --url http://server:7070 --token ferry_...
 ```
+
+### Jobs
 
 ```bash
 ferry submit -c 8 -m 32G -g 1 -t 4h --upload ./src -- python src/train.py --lr 1e-3

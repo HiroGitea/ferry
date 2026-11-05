@@ -4,12 +4,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use ferry_core::api::{
-    ArchiveInfo, ArchiveManifest, ArtifactEntry, CheckoutRequest, ClusterStatus, CreateTaskRequest,
-    CreateTokenRequest, CreateUserRequest, ErrorBody, Event, ExportTaskRequest, ExportTaskResponse,
-    GpuInfo, ImageInfo, ImportArchiveRequest, JobResult, ListJobsQuery, ListTasksQuery, LogChunk,
+    ArchiveInfo, ArchiveManifest, ArtifactEntry, CheckoutRequest, ClusterStatus,
+    CreateInviteRequest, CreateTaskRequest, CreateTokenRequest, CreateUserRequest, ErrorBody,
+    Event, ExportTaskRequest, ExportTaskResponse, GpuInfo, ImageInfo, ImportArchiveRequest,
+    InviteCreated, InviteInfo, InvitePreview, JobResult, ListJobsQuery, ListTasksQuery, LogChunk,
     Me, MetricInfo, MetricsQuery, MetricsResult, PinSnapshotRequest, PullImageRequest,
-    SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo, UpdateTaskRequest, UsageQuery,
-    UserUsage,
+    RegisterRequest, SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo,
+    UpdateTaskRequest, UsageQuery, UserUsage,
 };
 use ferry_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
 use futures::StreamExt;
@@ -70,6 +71,11 @@ impl Client {
 
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    /// The server root (what the dashboard is served from), without `/api/v1`.
+    pub fn server_url(&self) -> &str {
+        self.base.trim_end_matches("/api/v1")
     }
 
     fn req(&self, method: Method, path: &str) -> RequestBuilder {
@@ -267,6 +273,30 @@ impl Client {
     }
     pub async fn delete_token(&self, id: i64) -> Result<serde_json::Value, ClientError> {
         self.send(self.req(Method::DELETE, &format!("/tokens/{id}")))
+            .await
+    }
+    pub async fn invites(&self) -> Result<Vec<InviteInfo>, ClientError> {
+        self.send(self.req(Method::GET, "/invites")).await
+    }
+    pub async fn create_invite(
+        &self,
+        req: &CreateInviteRequest,
+    ) -> Result<InviteCreated, ClientError> {
+        self.send(self.req(Method::POST, "/invites").json(req))
+            .await
+    }
+    pub async fn delete_invite(&self, id: i64) -> Result<serde_json::Value, ClientError> {
+        self.send(self.req(Method::DELETE, &format!("/invites/{id}")))
+            .await
+    }
+    /// Public: no token needed.
+    pub async fn preview_invite(&self, code: &str) -> Result<InvitePreview, ClientError> {
+        self.send(self.req(Method::GET, "/invite").query(&[("code", code)]))
+            .await
+    }
+    /// Public: no token needed.
+    pub async fn register(&self, req: &RegisterRequest) -> Result<TokenCreated, ClientError> {
+        self.send(self.req(Method::POST, "/register").json(req))
             .await
     }
     pub async fn usage(&self, q: &UsageQuery) -> Result<Vec<UserUsage>, ClientError> {

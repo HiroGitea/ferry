@@ -35,6 +35,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         <Button type="submit" variant="primary" className="w-full" disabled={busy || !token.trim()}>
           Sign in
         </Button>
+        <p className="text-xs text-muted-fg">New here? Open the invite link your admin sent you.</p>
       </form>
     </div>
   );

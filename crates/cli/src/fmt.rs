@@ -749,3 +749,43 @@ pub fn print_manifest(m: &ferry_core::api::ArchiveManifest) {
         println!("{}", Table::new(rows).with(Style::blank()));
     }
 }
+
+pub fn print_invites(list: &[ferry_core::api::InviteInfo]) {
+    #[derive(Tabled)]
+    struct Row {
+        id: i64,
+        role: &'static str,
+        name: String,
+        uses: String,
+        expires: String,
+        by: String,
+        used_by: String,
+        note: String,
+    }
+    let now = chrono::Utc::now();
+    let rows: Vec<Row> = list
+        .iter()
+        .map(|i| Row {
+            id: i.id,
+            role: i.role.as_str(),
+            name: i.name.clone().unwrap_or_else(|| "any".into()),
+            uses: format!("{}/{}", i.uses, i.max_uses),
+            expires: if i.expires_at <= now {
+                "expired".into()
+            } else {
+                i.expires_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            },
+            by: i.created_by.clone().unwrap_or_default(),
+            used_by: i.used_by.join(","),
+            note: i.note.clone().unwrap_or_default(),
+        })
+        .collect();
+    if rows.is_empty() {
+        println!("no invites");
+    } else {
+        println!("{}", Table::new(rows).with(Style::blank()));
+    }
+}

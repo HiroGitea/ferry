@@ -215,6 +215,67 @@ pub struct TokenCreated {
     pub token: String,
 }
 
+/// Admin: create an invite link.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CreateInviteRequest {
+    /// Role of the users who register with it (default `user`).
+    #[serde(default)]
+    pub role: Option<Role>,
+    /// Lock the invite to this user name.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// How many accounts it can create (default 1).
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+    /// Lifetime in seconds (default 7 days).
+    #[serde(default)]
+    pub expires_in_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteInfo {
+    pub id: i64,
+    pub role: Role,
+    pub name: Option<String>,
+    pub note: Option<String>,
+    pub max_uses: u32,
+    pub uses: u32,
+    pub expires_at: DateTime<Utc>,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// Users who registered with this invite.
+    #[serde(default)]
+    pub used_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteCreated {
+    pub invite: InviteInfo,
+    /// Plaintext code, shown only once. The link is `<server>/register?code=<code>`.
+    pub code: String,
+}
+
+/// Public: what an invite code allows, shown on the registration page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvitePreview {
+    pub role: Role,
+    pub name: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub remaining_uses: u32,
+}
+
+/// Public: register with an invite code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterRequest {
+    pub code: String,
+    pub name: String,
+    /// Name of the first token (default "registration").
+    #[serde(default)]
+    pub token_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub id: i64,

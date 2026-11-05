@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use ferry_client::Client;
-use ferry_core::api::{CreateTokenRequest, CreateUserRequest, ListJobsQuery, UsageQuery};
+use ferry_core::api::{
+    CreateInviteRequest, CreateTokenRequest, CreateUserRequest, ListJobsQuery, RegisterRequest,
+    UsageQuery,
+};
 use ferry_core::{JobState, Quota, Role};
 
 #[derive(Parser)]
@@ -35,6 +38,19 @@ enum Cmd {
         /// Token (prompted if omitted)
         #[arg(long)]
         token: Option<String>,
+    },
+    /// Create an account from an invite link and log in with it
+    Register {
+        /// Invite link (http://server:7070/register?code=inv_...) or bare code (then pass --url)
+        invite: String,
+        /// User name (prompted if omitted)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Invite links for new users (admin)
+    Invite {
+        #[command(subcommand)]
+        cmd: InviteCmd,
     },
     /// Submit a job (`ferry submit [opts] -- cmd args...` or `ferry submit script.sh`)
     Submit(submit::SubmitArgs),
@@ -289,6 +305,32 @@ enum UserCmd {
 }
 
 #[derive(Subcommand)]
+enum InviteCmd {
+    List,
+    /// Create an invite link; prints it once
+    Create {
+        /// New users become admins
+        #[arg(long)]
+        admin: bool,
+        /// Only allow this user name
+        #[arg(long)]
+        name: Option<String>,
+        /// How many accounts the link can create
+        #[arg(long, default_value_t = 1)]
+        uses: u32,
+        /// Lifetime, e.g. 7d, 12h
+        #[arg(long, default_value = "7d")]
+        expires: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Revoke an invite
+    Rm {
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
 enum TokenCmd {
     List,
     Create {
@@ -311,6 +353,24 @@ enum McpCmd {
 
 #[derive(Args)]
 struct Noop {}
+
+/// Split an invite link into (server URL, code); a bare code uses --url / FERRY_URL / config.
+fn parse_invite(invite: &str, url: Option<&str>) -> anyhow::Result<(String, String)> {
+    let invite = invite.trim();
+    if let Some((base, query)) = invite.split_once("/register?") {
+        let code = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("code="))
+            .context("invite link has no code= parameter")?;
+        return Ok((base.trim_end_matches('/').to_string(), code.to_string()));
+    }
+    let url = url
+        .map(str::to_string)
+        .or_else(|| std::env::var("FERRY_URL").ok())
+        .or(config::load().url)
+        .context("pass the full invite link, or --url with a bare code")?;
+    Ok((url.trim_end_matches('/').to_string(), invite.to_string()))
+}
 
 fn client(cli: &Cli) -> anyhow::Result<Client> {
     let (url, token) = config::resolve(cli.url.clone(), cli.token.clone())?;
@@ -352,6 +412,103 @@ async fn real_main() -> anyhow::Result<()> {
                 me.user.role,
                 config::path().display()
             );
+        }
+        Cmd::Register { invite, name } => {
+            let (url, code) = parse_invite(invite, cli.url.as_deref())?;
+            let anon = Client::new(&url, "")?;
+            let preview = anon
+                .preview_invite(&code)
+                .await
+                .context("checking the invite")?;
+            let name = match (name, &preview.name) {
+                (Some(n), _) => n.clone(),
+                (None, Some(fixed)) => fixed.clone(),
+                (None, None) => {
+                    let default = std::env::var("USER").unwrap_or_default();
+                    dialoguer::Input::<String>::new()
+                        .with_prompt("user name")
+                        .default(default)
+                        .interact_text()?
+                }
+            };
+            let host = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
+            let t = anon
+                .register(&RegisterRequest {
+                    code,
+                    name,
+                    token_name: Some(format!("cli@{}", host.trim())),
+                })
+                .await?;
+            config::save(&config::CliConfig {
+                url: Some(url.clone()),
+                token: Some(t.token.clone()),
+            })?;
+            println!(
+                "registered as {} ({}); logged in, saved to {}",
+                t.user.name,
+                t.user.role.as_str(),
+                config::path().display()
+            );
+            println!(
+                "token (shown once; also use it for the dashboard at {url} and for Claude):\n{}",
+                t.token
+            );
+        }
+        Cmd::Invite { cmd } => {
+            let c = client(&cli)?;
+            match cmd {
+                InviteCmd::List => {
+                    let list = c.invites().await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&list)?);
+                    } else {
+                        fmt::print_invites(&list);
+                    }
+                }
+                InviteCmd::Create {
+                    admin,
+                    name,
+                    uses,
+                    expires,
+                    note,
+                } => {
+                    let created = c
+                        .create_invite(&CreateInviteRequest {
+                            role: Some(if *admin { Role::Admin } else { Role::User }),
+                            name: name.clone(),
+                            note: note.clone(),
+                            max_uses: Some(*uses),
+                            expires_in_secs: Some(ferry_core::parse_duration_secs(expires)?),
+                        })
+                        .await?;
+                    let link = format!("{}/register?code={}", c.server_url(), created.code);
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "invite": created.invite, "code": created.code, "link": link
+                            }))?
+                        );
+                    } else {
+                        let i = &created.invite;
+                        println!(
+                            "invite {} ({}, {} use{}, expires {}), shown once:\n\n  {link}\n",
+                            i.id,
+                            i.role.as_str(),
+                            i.max_uses,
+                            if i.max_uses == 1 { "" } else { "s" },
+                            i.expires_at
+                                .with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M"),
+                        );
+                        println!("open it in a browser, or run:  ferry register '{link}'");
+                    }
+                }
+                InviteCmd::Rm { id } => {
+                    c.delete_invite(*id).await?;
+                    println!("revoked invite {id}");
+                }
+            }
         }
         Cmd::Submit(args) => {
             let c = client(&cli)?;

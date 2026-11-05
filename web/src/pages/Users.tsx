@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Quota, type TokenCreated, type User } from "../api";
+import { api, inviteLink, type InviteCreated, type Quota, type TokenCreated, type User } from "../api";
 import { Button, Card, Empty, ErrorBox, Input, Select, Table, Td, Th } from "../components/ui";
 
 export default function Users() {
@@ -49,6 +49,7 @@ export default function Users() {
           </div>
         )}
       </Card>
+      <Invites />
       <Card title="Users">
         {users.error ? <ErrorBox error={users.error} /> : null}
         {!users.data?.length ? (
@@ -127,5 +128,145 @@ function UserRow({ user }: { user: User }) {
         {(newToken.error || del.error || save.error) && <ErrorBox error={newToken.error || del.error || save.error} />}
       </Td>
     </tr>
+  );
+}
+
+const EXPIRY = [
+  { label: "1 day", secs: 86400 },
+  { label: "7 days", secs: 7 * 86400 },
+  { label: "30 days", secs: 30 * 86400 },
+];
+
+function Invites() {
+  const qc = useQueryClient();
+  const invites = useQuery({ queryKey: ["invites"], queryFn: api.invites });
+  const [role, setRole] = useState<"user" | "admin">("user");
+  const [name, setName] = useState("");
+  const [uses, setUses] = useState("1");
+  const [expiry, setExpiry] = useState(String(7 * 86400));
+  const [note, setNote] = useState("");
+  const [created, setCreated] = useState<InviteCreated | null>(null);
+  const [copied, setCopied] = useState(false);
+  const create = useMutation({
+    mutationFn: () =>
+      api.createInvite({
+        role,
+        name: name.trim() || undefined,
+        note: note.trim() || undefined,
+        max_uses: name.trim() ? 1 : Math.max(1, Number(uses) || 1),
+        expires_in_secs: Number(expiry),
+      }),
+    onSuccess: (c) => {
+      setCreated(c);
+      setCopied(false);
+      setName("");
+      setNote("");
+      qc.invalidateQueries({ queryKey: ["invites"] });
+    },
+  });
+  const revoke = useMutation({
+    mutationFn: (id: number) => api.deleteInvite(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["invites"] }),
+  });
+  const link = created ? inviteLink(created.code) : "";
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+    } catch {
+      /* clipboard unavailable over plain http: the link is selectable */
+    }
+  };
+  const now = Date.now();
+
+  return (
+    <Card title="Invite links">
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create.mutate();
+        }}
+      >
+        <Select value={role} onChange={(e) => setRole(e.target.value as "user" | "admin")}>
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </Select>
+        <Input className="w-36" placeholder="name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+        <label className="flex items-center gap-1 text-sm text-muted-fg">
+          uses
+          <Input className="w-16" type="number" min={1} max={1000} value={name.trim() ? "1" : uses} disabled={!!name.trim()} onChange={(e) => setUses(e.target.value)} />
+        </label>
+        <Select value={expiry} onChange={(e) => setExpiry(e.target.value)}>
+          {EXPIRY.map((x) => (
+            <option key={x.secs} value={x.secs}>
+              expires in {x.label}
+            </option>
+          ))}
+        </Select>
+        <Input className="w-40" placeholder="note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+        <Button type="submit" variant="primary" disabled={create.isPending}>
+          Create link
+        </Button>
+        {create.error ? <ErrorBox error={create.error} /> : null}
+      </form>
+      {created && (
+        <div className="mt-3 rounded-md border border-success/40 bg-success/10 p-3 text-sm">
+          Invite link (shown once; send it to the new user):
+          <div className="mt-1 flex items-center gap-2">
+            <code className="block min-w-0 flex-1 select-all break-all font-mono text-xs">{link}</code>
+            <Button variant="ghost" onClick={copy}>
+              {copied ? "copied" : "copy"}
+            </Button>
+          </div>
+          <div className="mt-1 text-xs text-muted-fg">
+            Or from a terminal: <code>ferry register &apos;{link}&apos;</code>
+          </div>
+        </div>
+      )}
+      {invites.error ? <ErrorBox error={invites.error} /> : null}
+      {!!invites.data?.length && (
+        <div className="mt-3">
+          <Table>
+            <thead>
+              <tr className="border-b border-border">
+                <Th>ID</Th>
+                <Th>Role</Th>
+                <Th>Name</Th>
+                <Th>Uses</Th>
+                <Th>Expires</Th>
+                <Th>Registered</Th>
+                <Th>Note</Th>
+                <Th></Th>
+              </tr>
+            </thead>
+            <tbody>
+              {invites.data.map((i) => {
+                const expired = new Date(i.expires_at).getTime() <= now;
+                const usedUp = i.uses >= i.max_uses;
+                return (
+                  <tr key={i.id} className={"border-b border-border/60" + (expired || usedUp ? " text-muted-fg" : "")}>
+                    <Td className="tabular-nums">{i.id}</Td>
+                    <Td>{i.role}</Td>
+                    <Td>{i.name ?? "any"}</Td>
+                    <Td className="tabular-nums">
+                      {i.uses}/{i.max_uses}
+                    </Td>
+                    <Td>{expired ? "expired" : new Date(i.expires_at).toLocaleString()}</Td>
+                    <Td>{i.used_by.join(", ")}</Td>
+                    <Td>{i.note}</Td>
+                    <Td>
+                      <Button variant="ghost" onClick={() => revoke.mutate(i.id)} disabled={revoke.isPending}>
+                        {expired || usedUp ? "remove" : "revoke"}
+                      </Button>
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+        </div>
+      )}
+    </Card>
   );
 }

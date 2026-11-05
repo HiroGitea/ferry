@@ -245,6 +245,43 @@ export interface TokenCreated {
   token: string;
 }
 
+export interface InviteInfo {
+  id: number;
+  role: "admin" | "user";
+  name: string | null;
+  note: string | null;
+  max_uses: number;
+  uses: number;
+  expires_at: string;
+  created_by: string | null;
+  created_at: string;
+  used_by: string[];
+}
+
+export interface InviteCreated {
+  invite: InviteInfo;
+  code: string;
+}
+
+export interface InvitePreview {
+  role: "admin" | "user";
+  name: string | null;
+  expires_at: string;
+  remaining_uses: number;
+}
+
+export interface CreateInviteRequest {
+  role?: "admin" | "user";
+  name?: string;
+  note?: string;
+  max_uses?: number;
+  expires_in_secs?: number;
+}
+
+export function inviteLink(code: string): string {
+  return `${window.location.origin}/register?code=${encodeURIComponent(code)}`;
+}
+
 const TOKEN_KEY = "ferry.token";
 
 export function getToken(): string | null {
@@ -332,6 +369,12 @@ export const api = {
   setQuota: (name: string, q: Quota) =>
     request<Quota>("PUT", `/users/${encodeURIComponent(name)}/quota`, q),
   createToken: (p: { name?: string; user?: string }) => request<TokenCreated>("POST", "/tokens", p),
+  invites: () => request<InviteInfo[]>("GET", "/invites"),
+  createInvite: (body: CreateInviteRequest) => request<InviteCreated>("POST", "/invites", body),
+  deleteInvite: (id: number) => request<unknown>("DELETE", `/invites/${id}`),
+  previewInvite: (code: string) => request<InvitePreview>("GET", `/invite${qs({ code })}`),
+  register: (code: string, name: string) =>
+    request<TokenCreated>("POST", "/register", { code, name, token_name: "dashboard" }),
   sweep: () => request<unknown>("POST", "/retention/sweep"),
   submit: (body: Record<string, unknown>) => request<{ jobs: Job[]; estimate: string }>("POST", "/jobs", body),
   tasks: (p: { all?: boolean; user?: string }) => request<TaskSummary[]>("GET", `/tasks${qs(p)}`),

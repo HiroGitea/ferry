@@ -60,7 +60,7 @@ sudo mkdir -p /etc/ferry && sudo cp packaging/ferry.toml /etc/ferry/ferry.toml &
 sudo cp packaging/ferryd.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now ferryd
 ```
 
-首次启动会创建 `admin` 用户，token 在 `/var/lib/ferry/admin.token`。也可以用 `packaging/` 里的 PKGBUILD：`cd packaging && makepkg -si`。
+首次启动会创建 `admin` 用户，token 在 `/var/lib/ferry/admin.token`。其他人用邀请链接（见下文）或 `ferry user add <名字>` 加入。也可以用 `packaging/` 里的 PKGBUILD：`cd packaging && makepkg -si`。
 
 ### 配置要点（`/etc/ferry/ferry.toml`）
 
@@ -92,9 +92,29 @@ sudo cp packaging/ferry-agent.service /etc/systemd/system/ && sudo systemctl ena
 
 ## 使用
 
+### 用户
+
+管理员生成邀请链接（面板 Users → Invite links，或命令行），新用户打开链接、填用户名，拿到自己的 API token；命令行、面板和 Claude 都用这个 token。
+
+```bash
+ferry invite create --uses 5 --expires 7d --note "实验室"   # --name alice 锁定用户名，--admin 生成管理员
+```
+
+```bash
+ferry register 'http://server:7070/register?code=inv_...'  # 新用户：注册并自动登录
+```
+
+```bash
+ferry invite list ; ferry invite rm <id> ; ferry token create --name laptop
+```
+
+链接默认只能用一次、7 天过期（最长 90 天），数据库只存哈希。已有账号用 token 登录：
+
 ```bash
 ferry login --url http://server:7070 --token ferry_...
 ```
+
+### 作业
 
 ```bash
 ferry submit -c 8 -m 32G -g 1 -t 4h --upload ./src -- python src/train.py --lr 1e-3
