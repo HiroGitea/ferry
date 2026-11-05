@@ -1,0 +1,225 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// Address for the REST/MCP/dashboard server.
+    pub listen: String,
+    /// Database, admin token, and (by default) job workspaces live here. Put it on the SSD.
+    pub data_dir: PathBuf,
+    /// Root for per-user job workspaces (fast local disk). Defaults to `<data_dir>/users`.
+    pub scratch_root: Option<PathBuf>,
+    /// "podman" (default), "docker", or "process" (no isolation, development only).
+    pub runtime: String,
+    /// Image used when a job does not specify one.
+    pub default_image: String,
+    /// If non-empty, only these image references (exact or prefix ending with '/') may be used.
+    pub allowed_images: Vec<String>,
+    /// GPU indices the scheduler may allocate. `None` = all detected GPUs. `[]` = none.
+    pub managed_gpus: Option<Vec<u32>>,
+    /// CPUs kept free for interactive host use.
+    pub reserve_cpus: f64,
+    /// Memory kept free for interactive host use (e.g. "8G").
+    pub reserve_mem: String,
+    /// Hard cap on CPUs offered to jobs (default: host CPUs - reserve).
+    pub max_cpus: Option<f64>,
+    /// Hard cap on memory offered to jobs (default: host memory - reserve).
+    pub max_mem: Option<String>,
+    /// "auto" (NVML if available), "none", or "fake:<n>" for development.
+    pub gpu_provider: String,
+    /// Extra host directories mounted into every job (e.g. the NFS dataset share).
+    pub mounts: Vec<Mount>,
+    pub container: ContainerConfig,
+    pub retention: RetentionConfig,
+    pub fair_share: FairShareConfig,
+    pub log_level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mount {
+    pub host: PathBuf,
+    pub container: String,
+    #[serde(default = "default_true")]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ContainerConfig {
+    /// `--user` for the container process, e.g. "1000:1000". Leave empty to use the image default.
+    pub user: Option<String>,
+    /// `--userns` value (rootless podman: "keep-id" maps the daemon user to the container user).
+    pub userns: Option<String>,
+    /// podman/docker network mode: "slirp4netns", "pasta", "bridge", "none", "host".
+    pub network: String,
+    pub pids_limit: u32,
+    /// Shared memory size for the container (PyTorch DataLoader needs more than the 64M default).
+    pub shm_size: String,
+    /// "cdi" => `--device nvidia.com/gpu=N` (podman); "docker" => `--gpus device=N`.
+    pub gpu_flag_style: String,
+    /// Extra arguments appended to every `run` invocation.
+    pub extra_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Delete job workspaces (SSD scratch) this many days after the job finished.
+    pub keep_days: u32,
+    /// If total scratch usage exceeds this, oldest finished workspaces are deleted first.
+    pub max_scratch: Option<String>,
+    /// Before deleting, copy `/out` (and the log) to `<archive_dir>/<user>/<job_id>/` (e.g. on the NAS).
+    pub archive_dir: Option<PathBuf>,
+    /// How often the retention sweep runs.
+    pub interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FairShareConfig {
+    pub enabled: bool,
+    pub half_life_secs: f64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        let root = nix_is_root();
+        let data_dir = if root {
+            PathBuf::from("/var/lib/mlq")
+        } else {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("mlq")
+        };
+        Self {
+            listen: "127.0.0.1:7070".into(),
+            data_dir,
+            scratch_root: None,
+            runtime: "podman".into(),
+            default_image: "docker.io/pytorch/pytorch:latest".into(),
+            allowed_images: vec![],
+            managed_gpus: None,
+            reserve_cpus: 2.0,
+            reserve_mem: "8G".into(),
+            max_cpus: None,
+            max_mem: None,
+            gpu_provider: "auto".into(),
+            mounts: vec![],
+            container: ContainerConfig::default(),
+            retention: RetentionConfig::default(),
+            fair_share: FairShareConfig::default(),
+            log_level: "info".into(),
+        }
+    }
+}
+
+impl Default for ContainerConfig {
+    fn default() -> Self {
+        Self {
+            user: None,
+            userns: None,
+            network: "slirp4netns".into(),
+            pids_limit: 4096,
+            shm_size: "8g".into(),
+            gpu_flag_style: "auto".into(),
+            extra_args: vec![],
+        }
+    }
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            keep_days: 14,
+            max_scratch: None,
+            archive_dir: None,
+            interval_secs: 3600,
+        }
+    }
+}
+
+impl Default for FairShareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            half_life_secs: 7.0 * 86400.0,
+        }
+    }
+}
+
+fn nix_is_root() -> bool {
+    std::fs::metadata("/proc/self")
+        .map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.uid() == 0
+        })
+        .unwrap_or(false)
+}
+
+impl Config {
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Config> {
+        let candidates: Vec<PathBuf> = match path {
+            Some(p) => vec![p.to_path_buf()],
+            None => vec![PathBuf::from("/etc/mlq/mlq.toml")],
+        };
+        for p in candidates {
+            if p.exists() {
+                let text = std::fs::read_to_string(&p)
+                    .with_context(|| format!("reading {}", p.display()))?;
+                let cfg: Config =
+                    toml::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
+                return Ok(cfg);
+            } else if path.is_some() {
+                anyhow::bail!("config file {} not found", p.display());
+            }
+        }
+        Ok(Config::default())
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("mlq.db")
+    }
+
+    pub fn scratch_root(&self) -> PathBuf {
+        self.scratch_root
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("users"))
+    }
+
+    pub fn reserve_mem_bytes(&self) -> u64 {
+        mlq_core::parse_bytes(&self.reserve_mem).unwrap_or(0)
+    }
+
+    pub fn image_allowed(&self, image: &str) -> bool {
+        if self.allowed_images.is_empty() {
+            return true;
+        }
+        self.allowed_images.iter().any(|a| {
+            if a.ends_with('/') {
+                image.starts_with(a)
+            } else {
+                a == image
+            }
+        })
+    }
+
+    pub fn example_toml() -> String {
+        let mut c = Config::default();
+        c.mounts = vec![Mount {
+            host: "/mnt/nas/datasets".into(),
+            container: "/data".into(),
+            read_only: true,
+        }];
+        c.retention.archive_dir = Some("/mnt/nas/mlq-results".into());
+        c.retention.max_scratch = Some("500G".into());
+        toml::to_string_pretty(&c).unwrap_or_default()
+    }
+}

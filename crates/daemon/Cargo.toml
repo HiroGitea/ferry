@@ -1,0 +1,53 @@
+[package]
+name = "mlq-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mlqd"
+path = "src/main.rs"
+
+[features]
+default = ["nvml"]
+nvml = ["dep:nvml-wrapper"]
+# Serve the compiled dashboard from web/dist embedded in the binary.
+embed-web = []
+
+[dependencies]
+mlq-core.workspace = true
+mlq-mcp.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+sqlx.workspace = true
+sha2.workspace = true
+rand.workspace = true
+base64.workspace = true
+tar.workspace = true
+flate2.workspace = true
+walkdir.workspace = true
+dirs.workspace = true
+async-trait = "0.1"
+hex = "0.4"
+rust-embed.workspace = true
+mime_guess.workspace = true
+nvml-wrapper = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+reqwest.workspace = true
+mlq-client.workspace = true

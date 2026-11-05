@@ -1,0 +1,118 @@
+//! REST API (`/api/v1`), SSE events, dashboard static files and MCP mount point.
+
+pub mod admin;
+pub mod info;
+pub mod jobs;
+pub mod sse;
+pub mod web;
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post, put};
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+
+use crate::auth::require_auth;
+use crate::state::AppState;
+
+#[derive(Debug)]
+pub enum ApiError {
+    Unauthorized,
+    Forbidden(String),
+    NotFound(String),
+    BadRequest(String),
+    Conflict(String),
+    Internal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        ApiError::Internal(e)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, msg) = match self {
+            ApiError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "missing or invalid token".to_string(),
+            ),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
+            ApiError::Internal(e) => {
+                tracing::error!("internal error: {e:#}");
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+            }
+        };
+        (status, axum::Json(mlq_core::api::ErrorBody { error: msg })).into_response()
+    }
+}
+
+pub type ApiResult<T> = Result<axum::Json<T>, ApiError>;
+
+/// Turn a listen address like "0.0.0.0:7070" or "[::]:7070" into a loopback address with the same port.
+pub fn loopback_addr(listen: &str) -> String {
+    let port = listen.rsplit(':').next().unwrap_or("7070");
+    if listen.starts_with('[') || listen.starts_with("::") {
+        format!("[::1]:{port}")
+    } else {
+        format!("127.0.0.1:{port}")
+    }
+}
+
+pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/me", get(info::me))
+        .route("/status", get(info::status))
+        .route("/gpus", get(info::gpus))
+        .route("/images", get(info::images))
+        .route("/images/pull", post(info::pull_image))
+        .route("/jobs", post(jobs::submit).get(jobs::list))
+        .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))
+        .route("/jobs/{id}/release", post(jobs::release))
+        .route("/jobs/{id}/log", get(jobs::log))
+        .route("/jobs/{id}/wait", get(jobs::wait))
+        .route("/jobs/{id}/result", get(jobs::result))
+        .route("/jobs/{id}/artifacts", get(jobs::artifacts))
+        .route("/jobs/{id}/artifacts/{*path}", get(jobs::artifact))
+        .route("/jobs/{id}/files", put(jobs::upload_files))
+        .route("/users", get(admin::list_users).post(admin::create_user))
+        .route("/users/{name}", delete(admin::delete_user))
+        .route(
+            "/users/{name}/quota",
+            get(admin::get_quota).put(admin::set_quota),
+        )
+        .route("/tokens", get(admin::list_tokens).post(admin::create_token))
+        .route("/tokens/{id}", delete(admin::delete_token))
+        .route("/usage", get(admin::usage))
+        .route("/retention/sweep", post(admin::sweep))
+        .route("/events", get(sse::events))
+        .layer(axum::middleware::from_fn_with_state(state, require_auth))
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    // The MCP endpoint reuses the bearer middleware; tools call back into /api/v1 over loopback
+    // with the caller's token, so per-user permissions and quotas apply unchanged.
+    let self_url = format!("http://{}", loopback_addr(&state.config.listen));
+    let mcp = Router::new()
+        .nest_service("/mcp", mlq_mcp::http_service(self_url))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ));
+    let mut app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .nest("/api/v1", api_v1(state.clone()))
+        .merge(mcp);
+    app = web::mount(app);
+    app.layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024 * 1024))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}

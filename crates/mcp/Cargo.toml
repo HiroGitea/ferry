@@ -1,0 +1,18 @@
+[package]
+name = "mlq-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mlq-core.workspace = true
+mlq-client.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+chrono.workspace = true
+http = "1"
