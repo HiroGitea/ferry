@@ -301,12 +301,14 @@ impl Config {
     }
 
     pub fn example_toml() -> String {
-        let mut c = Config::default();
-        c.mounts = vec![Mount {
-            host: "/mnt/nas/datasets".into(),
-            container: "/data".into(),
-            read_only: true,
-        }];
+        let mut c = Config {
+            mounts: vec![Mount {
+                host: "/mnt/nas/datasets".into(),
+                container: "/data".into(),
+                read_only: true,
+            }],
+            ..Config::default()
+        };
         c.retention.archive_dir = Some("/mnt/nas/ferry-results".into());
         c.retention.max_scratch = Some("500G".into());
         toml::to_string_pretty(&c).unwrap_or_default()

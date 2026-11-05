@@ -87,12 +87,11 @@ pub async fn ensure_workspace_on(
 
 /// Image the next step starts from, and the snapshot it corresponds to.
 pub async fn head_image(state: &AppState, task: &Task) -> (String, Option<SnapshotId>) {
-    if let Some(sid) = task.head_snapshot_id {
-        if let Ok(Some(s)) = state.store.snapshot(sid).await {
-            if !s.deleted {
-                return (s.image, Some(sid));
-            }
-        }
+    if let Some(sid) = task.head_snapshot_id
+        && let Ok(Some(s)) = state.store.snapshot(sid).await
+        && !s.deleted
+    {
+        return (s.image, Some(sid));
     }
     (task.base_image.clone(), None)
 }
@@ -340,17 +339,17 @@ async fn watch_step(
         .await;
     finish_job(state, job.id, st, code, reason.as_deref()).await;
     let _ = state.store.touch_task(tid).await;
-    if state.config.retention.archive_dir.is_some() {
-        if let Some(t) = state.store.task(tid).await.ok().flatten() {
-            match crate::retention::archive_task(state, &t).await {
-                Ok(p) => {
-                    let _ = state
-                        .store
-                        .mark_archived(job.id, &p.to_string_lossy())
-                        .await;
-                }
-                Err(e) => warn!(task = tid, "archive failed: {e:#}"),
+    if state.config.retention.archive_dir.is_some()
+        && let Some(t) = state.store.task(tid).await.ok().flatten()
+    {
+        match crate::retention::archive_task(state, &t).await {
+            Ok(p) => {
+                let _ = state
+                    .store
+                    .mark_archived(job.id, &p.to_string_lossy())
+                    .await;
             }
+            Err(e) => warn!(task = tid, "archive failed: {e:#}"),
         }
     }
     publish_task(state, tid);
@@ -429,12 +428,12 @@ pub fn spawn_warm_reaper(state: Arc<AppState>) {
                     let lock = state.task_lock(t.id);
                     let Ok(_g) = lock.try_lock() else { continue };
                     // Re-read under the lock: a step may have just started using it.
-                    if let Ok(Some(t)) = state.store.task(t.id).await {
-                        if t.warm_until.map(|u| u < Utc::now()).unwrap_or(true) {
-                            info!(task = t.id, "warm window over; stopping environment");
-                            drop_warm(&state, &t).await;
-                            publish_task(&state, t.id);
-                        }
+                    if let Ok(Some(t)) = state.store.task(t.id).await
+                        && t.warm_until.map(|u| u < Utc::now()).unwrap_or(true)
+                    {
+                        info!(task = t.id, "warm window over; stopping environment");
+                        drop_warm(&state, &t).await;
+                        publish_task(&state, t.id);
                     }
                 }
             }
@@ -510,10 +509,11 @@ pub async fn close(state: &AppState, task: &Task) -> anyhow::Result<()> {
         }
     }
     drop_warm(state, task).await;
-    if state.config.retention.archive_dir.is_some() && task.workspace_path.is_some() {
-        if let Err(e) = crate::retention::archive_task(state, task).await {
-            warn!(task = task.id, "archive on close failed: {e:#}");
-        }
+    if state.config.retention.archive_dir.is_some()
+        && task.workspace_path.is_some()
+        && let Err(e) = crate::retention::archive_task(state, task).await
+    {
+        warn!(task = task.id, "archive on close failed: {e:#}");
     }
     state
         .store

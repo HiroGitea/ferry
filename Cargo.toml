@@ -13,7 +13,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/HiroGitea/ferry"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 ferry-core = { path = "crates/core" }

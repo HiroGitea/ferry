@@ -399,10 +399,10 @@ impl Client {
                 let frame = buf[..pos].to_string();
                 buf.drain(..pos + 2);
                 for line in frame.lines() {
-                    if let Some(data) = line.strip_prefix("data:") {
-                        if let Ok(ev) = serde_json::from_str::<Event>(data.trim()) {
-                            f(ev);
-                        }
+                    if let Some(data) = line.strip_prefix("data:")
+                        && let Ok(ev) = serde_json::from_str::<Event>(data.trim())
+                    {
+                        f(ev);
                     }
                 }
             }

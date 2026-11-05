@@ -402,7 +402,7 @@ impl Executor for ContainerExecutor {
                         .parse::<i32>()
                         .with_context(|| format!("parsing exit file '{text}'"));
                 }
-                if n % 10 == 0 && !self.is_alive(&env).await.unwrap_or(false) {
+                if n.is_multiple_of(10) && !self.is_alive(&env).await.unwrap_or(false) {
                     bail!("environment container stopped before the step finished");
                 }
                 n += 1;
@@ -533,11 +533,9 @@ impl Executor for ContainerExecutor {
         let names: Vec<String> = out
             .lines()
             .filter_map(|l| {
-                l.trim().strip_prefix("Loaded image").map(|r| {
-                    r.trim_start_matches(|c| c == ':' || c == 's' || c == ' ')
-                        .trim()
-                        .to_string()
-                })
+                l.trim()
+                    .strip_prefix("Loaded image")
+                    .map(|r| r.trim_start_matches([':', 's', ' ']).trim().to_string())
             })
             .filter(|s| !s.is_empty())
             .collect();

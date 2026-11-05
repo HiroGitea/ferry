@@ -147,10 +147,10 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
         .filter_map(|j| j.task_id)
         .collect::<std::collections::HashSet<_>>()
     {
-        if let Ok(Some(t)) = state.store.task(tid).await {
-            if let Some(n) = t.node_id {
-                task_nodes.insert(tid, n);
-            }
+        if let Ok(Some(t)) = state.store.task(tid).await
+            && let Some(n) = t.node_id
+        {
+            task_nodes.insert(tid, n);
         }
     }
     let decisions = schedule(SchedulerInput {
@@ -179,10 +179,10 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
                 publish_job(state, job_id).await;
             }
             Decision::Wait { job_id, reason } => {
-                if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-                    if j.reason.as_deref() != Some(&reason) {
-                        state.store.set_reason(job_id, Some(&reason)).await?;
-                    }
+                if let Some(j) = jobs.iter().find(|j| j.id == job_id)
+                    && j.reason.as_deref() != Some(&reason)
+                {
+                    state.store.set_reason(job_id, Some(&reason)).await?;
                 }
             }
         }
@@ -440,25 +440,25 @@ pub(crate) async fn finish_job(
 
 async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcome) {
     let (st, code, reason) = outcome_state(outcome);
-    if let Ok(Some(job)) = state.store.job(job_id).await {
-        if let Ok(node) = state.node_for_job(&job) {
-            let _ = node.executor.cleanup(&handle.to_string()).await;
-        }
+    if let Ok(Some(job)) = state.store.job(job_id).await
+        && let Ok(node) = state.node_for_job(&job)
+    {
+        let _ = node.executor.cleanup(&handle.to_string()).await;
     }
     finish_job(state, job_id, st, code, reason.as_deref()).await;
     // Copy results to the archive (NAS) right away so the SSD copy is only a cache.
-    if state.config.retention.archive_dir.is_some() {
-        if let Ok(Some(job)) = state.store.job(job_id).await {
-            match crate::retention::archive_job(state, &job).await {
-                Ok(p) => {
-                    info!(job = job_id, path = %p.display(), "results archived");
-                    publish_job(state, job_id).await;
-                }
-                Err(e) => warn!(
-                    job = job_id,
-                    "archive failed (will retry in retention sweep): {e:#}"
-                ),
+    if state.config.retention.archive_dir.is_some()
+        && let Ok(Some(job)) = state.store.job(job_id).await
+    {
+        match crate::retention::archive_job(state, &job).await {
+            Ok(p) => {
+                info!(job = job_id, path = %p.display(), "results archived");
+                publish_job(state, job_id).await;
             }
+            Err(e) => warn!(
+                job = job_id,
+                "archive failed (will retry in retention sweep): {e:#}"
+            ),
         }
     }
 }

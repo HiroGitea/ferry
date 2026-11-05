@@ -253,10 +253,10 @@ pub fn host_samples(prev: &mut HostPrev, cfg: &Config) -> Samples {
     if let Some(p) = fs_used_pct(&cfg.scratch_root()) {
         push(&mut s, "host.scratch.used", "%", p);
     }
-    if let Some(dir) = &cfg.retention.archive_dir {
-        if let Some(p) = fs_used_pct(dir) {
-            push(&mut s, "host.archive.used", "%", p);
-        }
+    if let Some(dir) = &cfg.retention.archive_dir
+        && let Some(p) = fs_used_pct(dir)
+    {
+        push(&mut s, "host.archive.used", "%", p);
     }
     s
 }
@@ -306,16 +306,16 @@ async fn collect(state: &AppState, prev: &mut Prev) -> Samples {
     }
     for t in state.store.warm_tasks().await.unwrap_or_default() {
         let scope = format!("task.{}", t.id);
-        if let Some(c) = t.warm_container {
-            if !targets.iter().any(|x| x.0 == scope) {
-                targets.push((
-                    scope,
-                    c,
-                    vec![],
-                    t.user_id,
-                    t.node_id.clone().unwrap_or_else(|| primary_id.clone()),
-                ));
-            }
+        if let Some(c) = t.warm_container
+            && !targets.iter().any(|x| x.0 == scope)
+        {
+            targets.push((
+                scope,
+                c,
+                vec![],
+                t.user_id,
+                t.node_id.clone().unwrap_or_else(|| primary_id.clone()),
+            ));
         }
     }
 

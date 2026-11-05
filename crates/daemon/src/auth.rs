@@ -45,10 +45,9 @@ fn extract_token(req: &Request<Body>) -> Option<String> {
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
+        && let Some(t) = v.strip_prefix("Bearer ")
     {
-        if let Some(t) = v.strip_prefix("Bearer ") {
-            return Some(t.trim().to_string());
-        }
+        return Some(t.trim().to_string());
     }
     // EventSource cannot set headers: allow ?token= on the query string.
     req.uri().query().and_then(|q| {

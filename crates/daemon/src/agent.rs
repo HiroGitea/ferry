@@ -304,11 +304,11 @@ async fn fs_pack(State(st): State<S>, Json(r): Json<PathReq>) -> Result<Response
         let mut ar = tar::Builder::new(ChanWriter(tx.clone()));
         for sub in subdirs {
             let dir = root.join(&sub);
-            if dir.is_dir() {
-                if let Err(e) = ar.append_dir_all(&sub, &dir) {
-                    let _ = tx.blocking_send(Err(std::io::Error::other(e)));
-                    return;
-                }
+            if dir.is_dir()
+                && let Err(e) = ar.append_dir_all(&sub, &dir)
+            {
+                let _ = tx.blocking_send(Err(std::io::Error::other(e)));
+                return;
             }
         }
         let _ = ar.finish();

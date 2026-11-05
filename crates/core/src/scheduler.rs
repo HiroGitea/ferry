@@ -236,23 +236,23 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
         let quota = quotas.get(&j.user_id).cloned().unwrap_or_default();
         let rj = running_jobs.get(&j.user_id).copied().unwrap_or(0);
         let rg = running_gpus.get(&j.user_id).copied().unwrap_or(0);
-        if let Some(max) = quota.max_running_jobs {
-            if rj >= max {
-                decisions.push(Decision::Wait {
-                    job_id: j.id,
-                    reason: format!("quota: {max} running jobs"),
-                });
-                continue;
-            }
+        if let Some(max) = quota.max_running_jobs
+            && rj >= max
+        {
+            decisions.push(Decision::Wait {
+                job_id: j.id,
+                reason: format!("quota: {max} running jobs"),
+            });
+            continue;
         }
-        if let Some(max) = quota.max_running_gpus {
-            if rg + j.resources.gpus > max {
-                decisions.push(Decision::Wait {
-                    job_id: j.id,
-                    reason: format!("quota: {max} running gpus"),
-                });
-                continue;
-            }
+        if let Some(max) = quota.max_running_gpus
+            && rg + j.resources.gpus > max
+        {
+            decisions.push(Decision::Wait {
+                job_id: j.id,
+                reason: format!("quota: {max} running gpus"),
+            });
+            continue;
         }
         let want = j.resources.gpus as usize;
         let pinned = j

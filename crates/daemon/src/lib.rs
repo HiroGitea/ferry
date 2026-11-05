@@ -52,10 +52,10 @@ pub async fn build_state(config: Config) -> anyhow::Result<Arc<AppState>> {
     }
     // Agents that registered before: listed as offline until they report again.
     for reg in store.known_nodes().await? {
-        if nodes.get(&reg.id).is_none() {
-            if let Ok(n) = api::nodes::node_from_registration(&config, &reg, false) {
-                nodes.insert(n);
-            }
+        if nodes.get(&reg.id).is_none()
+            && let Ok(n) = api::nodes::node_from_registration(&config, &reg, false)
+        {
+            nodes.insert(n);
         }
     }
     let metrics = metrics::MetricsHub::open(&config).await?;

@@ -446,10 +446,10 @@ pub async fn list(state: &AppState, user: Option<&str>) -> anyhow::Result<Vec<Ar
             .next()
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .unwrap_or_default();
-        if let Some(u) = user {
-            if sanitize_name(u) != owner {
-                continue;
-            }
+        if let Some(u) = user
+            && sanitize_name(u) != owner
+        {
+            continue;
         }
         let md = e.metadata()?;
         let fname = e.file_name().to_string_lossy().to_string();
@@ -469,7 +469,7 @@ pub async fn list(state: &AppState, user: Option<&str>) -> anyhow::Result<Vec<Ar
             task_id,
         });
     }
-    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
     Ok(out)
 }
 
@@ -625,46 +625,46 @@ async fn restore(
     )
     .ok();
     // HEAD image → snapshot 1 of the new task.
-    if let Some(img) = m.images.iter().find(|i| i.is_head) {
-        if node.executor.supports_snapshots() {
-            let local_tar = staging.join(&img.file);
-            let node_tar = if node.local {
-                local_tar.clone()
-            } else {
-                let p = node
-                    .scratch_root()
-                    .join(".transfer")
-                    .join(format!("import-{}.oci.tar", task.id));
-                node.files.push_file(&local_tar, &p).await?;
-                p
-            };
-            let loaded = node.executor.load_image(&node_tar).await?;
-            if !node.local {
-                let _ = node.files.remove_file(&node_tar).await;
-            }
-            let src = loaded.first().cloned().unwrap_or_else(|| img.image.clone());
-            let tag = crate::tasks::snapshot_image(task.id, 1);
-            node.executor.tag_image(&src, &tag).await?;
-            if src != tag && src.starts_with("localhost/ferry-task-") {
-                let _ = node.executor.remove_image(&src).await;
-            }
-            let snap = state
-                .store
-                .create_snapshot(task.id, None, None, &tag, Some(img.bytes))
-                .await?;
-            state
-                .store
-                .pin_snapshot(
-                    snap.id,
-                    true,
-                    Some(&format!(
-                        "imported from {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    )),
-                )
-                .await?;
-            state.store.set_task_head(task.id, Some(snap.id)).await?;
+    if let Some(img) = m.images.iter().find(|i| i.is_head)
+        && node.executor.supports_snapshots()
+    {
+        let local_tar = staging.join(&img.file);
+        let node_tar = if node.local {
+            local_tar.clone()
+        } else {
+            let p = node
+                .scratch_root()
+                .join(".transfer")
+                .join(format!("import-{}.oci.tar", task.id));
+            node.files.push_file(&local_tar, &p).await?;
+            p
+        };
+        let loaded = node.executor.load_image(&node_tar).await?;
+        if !node.local {
+            let _ = node.files.remove_file(&node_tar).await;
         }
+        let src = loaded.first().cloned().unwrap_or_else(|| img.image.clone());
+        let tag = crate::tasks::snapshot_image(task.id, 1);
+        node.executor.tag_image(&src, &tag).await?;
+        if src != tag && src.starts_with("localhost/ferry-task-") {
+            let _ = node.executor.remove_image(&src).await;
+        }
+        let snap = state
+            .store
+            .create_snapshot(task.id, None, None, &tag, Some(img.bytes))
+            .await?;
+        state
+            .store
+            .pin_snapshot(
+                snap.id,
+                true,
+                Some(&format!(
+                    "imported from {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )),
+            )
+            .await?;
+        state.store.set_task_head(task.id, Some(snap.id)).await?;
     }
     Ok(())
 }

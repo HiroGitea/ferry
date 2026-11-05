@@ -136,12 +136,12 @@ pub async fn create(
         ));
     }
     let keep = req.keep_warm_secs.unwrap_or(0).min(24 * 3600);
-    if let Some(n) = &req.node {
-        if state.nodes.get(n).is_none() {
-            return Err(ApiError::BadRequest(format!(
-                "node '{n}' is not registered"
-            )));
-        }
+    if let Some(n) = &req.node
+        && state.nodes.get(n).is_none()
+    {
+        return Err(ApiError::BadRequest(format!(
+            "node '{n}' is not registered"
+        )));
     }
     let t = state
         .store
@@ -372,12 +372,12 @@ pub async fn import(
     check_archive_access(&user, &req.name)?;
     let path = crate::archive::resolve(&state, &req.name)
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
-    if let Some(n) = &req.node {
-        if state.nodes.get(n).is_none() {
-            return Err(ApiError::BadRequest(format!(
-                "node '{n}' is not registered"
-            )));
-        }
+    if let Some(n) = &req.node
+        && state.nodes.get(n).is_none()
+    {
+        return Err(ApiError::BadRequest(format!(
+            "node '{n}' is not registered"
+        )));
     }
     let t = crate::archive::import_task(
         &state,

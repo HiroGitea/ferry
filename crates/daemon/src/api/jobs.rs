@@ -67,12 +67,12 @@ fn validate(
             "cpus and mem_bytes must be positive".into(),
         ));
     }
-    if let Some(img) = &req.image {
-        if !state.config.image_allowed(img) {
-            return Err(ApiError::Forbidden(format!(
-                "image '{img}' is not in allowed_images"
-            )));
-        }
+    if let Some(img) = &req.image
+        && !state.config.image_allowed(img)
+    {
+        return Err(ApiError::Forbidden(format!(
+            "image '{img}' is not in allowed_images"
+        )));
     }
     for (p, c) in &req.files {
         if c.len() > 4 * 1024 * 1024 {
@@ -164,12 +164,12 @@ pub async fn submit(
         }
         None => None,
     };
-    if let Some(n) = &req.node {
-        if state.nodes.get(n).is_none() {
-            return Err(ApiError::BadRequest(format!(
-                "node '{n}' is not registered"
-            )));
-        }
+    if let Some(n) = &req.node
+        && state.nodes.get(n).is_none()
+    {
+        return Err(ApiError::BadRequest(format!(
+            "node '{n}' is not registered"
+        )));
     }
     let base = task
         .as_ref()
@@ -402,10 +402,10 @@ pub async fn release(
 /// Where a job's files live: on its node, or in the control node's archive once the scratch
 /// workspace was removed (archives have the same layout: out/, job.log or logs/<id>.log).
 fn files_of(state: &AppState, job: &Job) -> Result<(Arc<dyn Files>, Workspace), ApiError> {
-    if job.workspace_deleted {
-        if let Some(a) = &job.archive_path {
-            return Ok((Arc::new(LocalFiles), Workspace::open(a.into())));
-        }
+    if job.workspace_deleted
+        && let Some(a) = &job.archive_path
+    {
+        return Ok((Arc::new(LocalFiles), Workspace::open(a.into())));
     }
     let node = state
         .node(job.node_id.as_deref().or(job.requested_node.as_deref()))

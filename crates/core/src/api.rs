@@ -270,7 +270,8 @@ pub struct PullImageRequest {
     pub reference: String,
 }
 
-/// Server-sent events.
+/// Server-sent events. Short-lived and cloned per subscriber, so the unboxed `Job` is fine.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {

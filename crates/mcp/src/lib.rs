@@ -207,6 +207,7 @@ pub struct UsageParams {
     pub since_days: Option<u32>,
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the MCP tool parameters one to one
 fn build_request(
     command: &str,
     image: Option<String>,
