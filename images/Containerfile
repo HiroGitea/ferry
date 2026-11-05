@@ -1,0 +1,21 @@
+# Default job image for mlq: PyTorch + CUDA runtime plus the usual experiment tooling.
+#
+#   podman build -t localhost/mlq-pytorch:latest -f images/Containerfile images/
+#   # then in /etc/mlq/mlq.toml:  default_image = "localhost/mlq-pytorch:latest"
+#
+# Jobs run with cwd=/work (uploaded code), write results to /out, read datasets from /data.
+FROM docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    MLQ_OUT=/out
+
+RUN pip install --upgrade pip && pip install \
+    numpy pandas scipy scikit-learn matplotlib tqdm pyyaml \
+    mlflow tensorboard \
+    transformers datasets accelerate
+
+# Non-root user matching `container.user = "1000:1000"` in mlq.toml.
+RUN useradd -m -u 1000 -s /bin/bash runner && mkdir -p /work /out && chown runner:runner /work /out
+USER runner
+WORKDIR /work

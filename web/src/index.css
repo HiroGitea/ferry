@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+/* Design tokens (light), following the mlq dashboard palette. */
+:root {
+  color-scheme: light;
+  --bg: #f9f9f7;
+  --card: #fcfcfb;
+  --fg: #0b0b0b;
+  --muted: #efeeea;
+  --muted-fg: #52514e;
+  --border: #e1e0d9;
+  --info: #2a78d6;
+  --success: #006300;
+  --warning: #b97400;
+  --danger: #d03b3b;
+  /* categorical series (fixed slot order) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --tick: #898781;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0d0d0d;
+    --card: #1a1a19;
+    --fg: #f0efec;
+    --muted: #2c2c2a;
+    --muted-fg: #c3c2b7;
+    --border: #2c2c2a;
+    --info: #3987e5;
+    --success: #0ca30c;
+    --warning: #fab219;
+    --danger: #e66767;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --tick: #898781;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0d0d;
+  --card: #1a1a19;
+  --fg: #f0efec;
+  --muted: #2c2c2a;
+  --muted-fg: #c3c2b7;
+  --border: #2c2c2a;
+  --info: #3987e5;
+  --success: #0ca30c;
+  --warning: #fab219;
+  --danger: #e66767;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --tick: #898781;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-card-fg: var(--fg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-muted-fg: var(--muted-fg);
+  --color-border: var(--border);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

@@ -1,0 +1,82 @@
+# /etc/mlq/mlq.toml — mlqd configuration (all keys optional; shown with defaults or examples).
+
+# Where the REST API, dashboard and MCP endpoint listen. Use 0.0.0.0:7070 to allow remote
+# Claude Code / dashboard access (tokens are required either way); put a TLS reverse proxy in
+# front if the network is untrusted.
+listen = "127.0.0.1:7070"
+
+# SQLite database, admin token and — by default — job workspaces. MUST be on the local SSD.
+data_dir = "/var/lib/mlq"
+# Per-job scratch (work/ and out/) root; defaults to <data_dir>/users. Keep it on the SSD.
+# scratch_root = "/ssd/mlq-scratch"
+
+# Container runtime: "podman" (recommended, rootless), "docker", or "process" (no isolation,
+# development only).
+runtime = "podman"
+
+# Image used when a job does not name one. Pre-pull it: mlq image pull <ref>
+default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
+
+# Restrict images to this list (exact references, or prefixes ending in '/'). Empty = any image.
+allowed_images = [
+  "docker.io/pytorch/",
+  "docker.io/nvidia/",
+  "localhost/",
+]
+
+# GPU indices the scheduler may hand out. Omit for all detected GPUs; [] for none.
+# Example: 4 GPUs, keep GPU 3 free for interactive use on the host.
+# managed_gpus = [0, 1, 2]
+
+# Resources kept free for people working directly on the host.
+reserve_cpus = 4
+reserve_mem = "16G"
+
+# "auto" (NVML), "none", or "fake:<n>" for development without GPUs.
+gpu_provider = "auto"
+
+log_level = "info"
+
+# Host directories mounted into every job. Datasets on the NAS (NFS, HDD) go here read-only.
+# Jobs read /data; results go to /out (SSD, archived to the NAS when the job finishes).
+[[mounts]]
+host = "/mnt/nas/datasets"
+container = "/data"
+read_only = true
+
+# Optional: a writable NAS directory for jobs that want to write final results directly.
+# [[mounts]]
+# host = "/mnt/nas/results"
+# container = "/results"
+# read_only = false
+
+[container]
+# Run the job as this uid:gid inside the container. With rootless podman and userns = "keep-id"
+# the container user maps to the daemon's `mlq` account on the host, which is what NFS sees;
+# make sure the NAS export grants that uid read access (or use all_squash/anon uid mapping).
+user = "1000:1000"
+userns = "keep-id"
+# slirp4netns (default), pasta, bridge, none (no network at all), host
+network = "slirp4netns"
+pids_limit = 4096
+# PyTorch DataLoader workers need more than podman's 64M default.
+shm_size = "8g"
+# "cdi" => --device nvidia.com/gpu=N (podman + nvidia-container-toolkit CDI spec)
+# "docker" => --gpus device=N
+gpu_flag_style = "auto"
+extra_args = []
+
+[retention]
+# Delete SSD workspaces this many days after the job finished (only after archiving).
+keep_days = 14
+# Start deleting the oldest finished workspaces when scratch exceeds this size.
+max_scratch = "500G"
+# Copy /out and the log here (NAS) as soon as a job finishes. Workspaces whose archive copy
+# failed are never deleted.
+archive_dir = "/mnt/nas/mlq-results"
+interval_secs = 3600
+
+[fair_share]
+enabled = true
+# Usage halves every 7 days when ordering queued jobs of equal priority.
+half_life_secs = 604800

@@ -1,0 +1,40 @@
+# Maintainer: you <you@example.com>
+# Build from a checkout:  cd packaging && makepkg -si
+pkgname=mlq
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Containerised GPU/CPU job queue for ML experiments with CLI, REST API, MCP server and web dashboard"
+arch=('x86_64' 'aarch64')
+url="https://github.com/example/mlq"
+license=('MIT')
+depends=('podman' 'gcc-libs')
+optdepends=('nvidia-container-toolkit: GPU passthrough (CDI)' 'nvidia-utils: NVML GPU metrics')
+makedepends=('cargo' 'pnpm' 'nodejs')
+backup=('etc/mlq/mlq.toml')
+source=()
+sha256sums=()
+
+prepare() {
+  cd "$startdir/.."
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$startdir/../web"
+  pnpm install --frozen-lockfile
+  pnpm build
+  cd "$startdir/.."
+  cargo build --release --locked --features mlq-daemon/embed-web
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 target/release/mlqd "$pkgdir/usr/bin/mlqd"
+  install -Dm755 target/release/mlq "$pkgdir/usr/bin/mlq"
+  install -Dm644 packaging/mlq.toml "$pkgdir/etc/mlq/mlq.toml"
+  sed 's#/usr/local/bin/#/usr/bin/#' packaging/mlqd.service > "$srcdir/mlqd.service"
+  install -Dm644 "$srcdir/mlqd.service" "$pkgdir/usr/lib/systemd/system/mlqd.service"
+  install -Dm644 packaging/mlq.sysusers "$pkgdir/usr/lib/sysusers.d/mlq.conf"
+  install -Dm644 packaging/mlq.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/mlq.conf"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
