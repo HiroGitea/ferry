@@ -53,6 +53,9 @@ pub struct Task {
     pub state: TaskState,
     /// Snapshot the next step starts from (`None` = `base_image`).
     pub head_snapshot_id: Option<SnapshotId>,
+    /// Node holding the environment and workspace; set by the first step (or at creation with --node).
+    #[serde(default)]
+    pub node_id: Option<String>,
     pub workspace_path: Option<String>,
     pub archive_path: Option<String>,
     /// Container kept warm after the last step, and until when.

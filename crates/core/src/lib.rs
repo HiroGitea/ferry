@@ -13,6 +13,6 @@ pub use job::{Job, JobId, JobState};
 pub use resource::{
     Inventory, ResourceOverrides, ResourceRequest, parse_bytes, parse_duration_secs,
 };
-pub use scheduler::{Assignment, Decision, schedule};
+pub use scheduler::{Assignment, Decision, NodeInventory, schedule};
 pub use task::{Snapshot, SnapshotId, Task, TaskDetail, TaskId, TaskState, TaskSummary};
 pub use user::{Quota, Role, User, UserId};

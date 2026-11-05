@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct RawGpu {
     pub index: u32,
     pub name: String,

@@ -43,6 +43,9 @@ pub struct SubmitJobRequest {
     /// /work and /out. `image` must not be set.
     #[serde(default)]
     pub task_id: Option<TaskId>,
+    /// Run on this node only (default: any node with free resources).
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -96,6 +99,8 @@ pub struct JobResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GpuInfo {
+    #[serde(default)]
+    pub node_id: String,
     pub index: u32,
     pub name: String,
     pub uuid: String,
@@ -123,16 +128,59 @@ pub struct NodeInfo {
     pub default_image: String,
 }
 
+/// One node as seen by the control daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeStatus {
+    pub info: NodeInfo,
+    pub online: bool,
+    pub local: bool,
+    pub url: Option<String>,
+    pub last_seen: DateTime<Utc>,
+    pub gpus: Vec<GpuInfo>,
+    pub running_jobs: u32,
+    pub free_cpus: f64,
+    pub free_mem: u64,
+    pub free_gpus: Vec<u32>,
+    /// Container paths of the mounts this node offers (e.g. "/data").
+    pub mounts: Vec<String>,
+    pub supports_snapshots: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClusterStatus {
+    /// The node the API was asked on (local node, or the first node for a pure control daemon).
     pub node: NodeInfo,
+    pub nodes: Vec<NodeStatus>,
+    /// All GPUs of all nodes (`node_id` tells them apart).
     pub gpus: Vec<GpuInfo>,
     pub queued_jobs: u32,
     pub running_jobs: u32,
     pub free_cpus: f64,
     pub free_mem: u64,
+    /// Free GPUs on all nodes, as "node:index" when there is more than one node.
     pub free_gpus: Vec<u32>,
+    pub free_gpu_count: u32,
+    pub managed_gpu_count: u32,
     pub version: String,
+}
+
+/// What an agent reports when registering with the control daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRegistration {
+    pub id: String,
+    pub url: String,
+    pub hostname: String,
+    pub runtime: String,
+    pub version: String,
+    pub cpus_total: f64,
+    pub mem_total: u64,
+    pub cpus_managed: f64,
+    pub mem_managed: u64,
+    pub gpus_managed: Vec<u32>,
+    pub scratch_root: String,
+    pub default_image: String,
+    pub mounts: Vec<String>,
+    pub supports_snapshots: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -250,6 +298,8 @@ pub struct CreateTaskRequest {
     pub resources: ResourceOverrides,
     /// Keep the container running this long after a successful step (0 = stop immediately).
     pub keep_warm_secs: Option<u64>,
+    /// Pin the task to this node (default: the node of the first step).
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -394,4 +444,6 @@ pub struct ImportArchiveRequest {
     pub name: String,
     /// Name for the new task (default: the archived name).
     pub task_name: Option<String>,
+    /// Node to restore onto (default: the primary node). Needs a container runtime for the image.
+    pub node: Option<String>,
 }

@@ -73,6 +73,7 @@ function Header({ d }: { d: TD }) {
           </div>
           <div className="text-xs text-muted-fg">
             {t.user_name} · created {fmtTime(t.created_at)} · defaults {t.resources.cpus} CPU, {fmtBytes(t.resources.mem_bytes)}, {t.resources.gpus} GPU
+            {t.node_id ? ` · node ${t.node_id}` : ""}
           </div>
           <div className="text-xs">
             <span className="text-muted-fg">next step starts from </span>

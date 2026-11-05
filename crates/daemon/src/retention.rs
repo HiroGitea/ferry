@@ -1,5 +1,6 @@
 //! Lifecycle of SSD scratch workspaces: archive `/out` + log to the NAS (optional) and delete
 //! workspaces older than `keep_days`, or oldest-first when total scratch exceeds `max_scratch`.
+//! Workspaces live on the node that ran the job; the archive lives on the control node.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,8 +9,9 @@ use std::time::Duration;
 use chrono::Utc;
 use tracing::{info, warn};
 
+use crate::node::Node;
 use crate::state::AppState;
-use crate::workspace::{Workspace, sanitize_name};
+use crate::workspace::sanitize_name;
 
 pub fn spawn(state: Arc<AppState>) {
     let interval = state.config.retention.interval_secs.max(60);
@@ -34,8 +36,37 @@ pub struct SweepReport {
     pub kept_unarchived: u32,
 }
 
-/// Copy `/out` and the log of a finished job to `<archive_dir>/<user>/<job_id>/`, verify the copy
-/// (file count and bytes), and record the location. Idempotent: re-copies if called again.
+/// Copy `root/<subdirs>` from the node into `dest` and verify every `out/` file arrived with
+/// its size (as listed by the node itself).
+async fn pull_verified(
+    node: &Node,
+    root: &Path,
+    subdirs: &[&str],
+    dest: &Path,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    node.files.copy_to_local(root, subdirs, dest).await?;
+    if subdirs.contains(&"out") && node.files.exists(&root.join("out")).await? {
+        for e in node
+            .files
+            .list_out(root)
+            .await?
+            .iter()
+            .filter(|e| !e.is_dir)
+        {
+            let got = std::fs::metadata(dest.join("out").join(&e.path))
+                .map(|m| m.len())
+                .ok();
+            if got != Some(e.size) {
+                anyhow::bail!("archive verification failed for out/{}", e.path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy `/out` and the log of a finished job to `<archive_dir>/<user>/<job_id>/` and record the
+/// location. Idempotent: re-copies if called again.
 pub async fn archive_job(state: &AppState, job: &mlq_core::Job) -> anyhow::Result<PathBuf> {
     let Some(dir) = state.config.retention.archive_dir.clone() else {
         anyhow::bail!("no archive_dir configured");
@@ -43,13 +74,36 @@ pub async fn archive_job(state: &AppState, job: &mlq_core::Job) -> anyhow::Resul
     let Some(p) = job.workspace_path.clone() else {
         anyhow::bail!("job has no workspace");
     };
-    let ws = Workspace::open(p.into());
-    let user = job.user_name.clone();
-    let id = job.id;
-    let dest = tokio::task::spawn_blocking(move || archive(&ws, &dir, &user, id)).await??;
+    let node = state.node_for_job(job)?;
+    let root = PathBuf::from(p);
+    let dest = dir
+        .join(sanitize_name(&job.user_name))
+        .join(job.id.to_string());
+    pull_verified(&node, &root, &["out"], &dest).await?;
+    let log = root.join("job.log");
+    if node.files.exists(&log).await? {
+        node.files.fetch_file(&log, &dest.join("job.log")).await?;
+    }
     state
         .store
         .mark_archived(job.id, &dest.to_string_lossy())
+        .await?;
+    Ok(dest)
+}
+
+/// Copy a task's `/out` and step logs to `<archive_dir>/<user>/task-<id>/` and record it.
+/// Called after every step, so the archive always mirrors the task's results.
+pub async fn archive_task(state: &AppState, task: &mlq_core::Task) -> anyhow::Result<PathBuf> {
+    let Some(root) = state.config.retention.archive_dir.clone() else {
+        anyhow::bail!("no archive_dir configured");
+    };
+    let node = state.node_for_task(task)?;
+    let ws = crate::tasks::task_workspace(state, task);
+    let dest = crate::tasks::archive_dir_for(&root, task);
+    pull_verified(&node, &ws.root, &["out", "logs"], &dest).await?;
+    state
+        .store
+        .set_task_archive(task.id, &dest.to_string_lossy())
         .await?;
     Ok(dest)
 }
@@ -64,14 +118,18 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<SweepReport> {
         .and_then(|s| mlq_core::parse_bytes(s).ok());
 
     let jobs = state.store.finished_jobs_with_workspace().await?;
-    // Size every candidate once (blocking IO, but a sweep is rare).
     let mut sized: Vec<(mlq_core::Job, u64)> = Vec::new();
     for j in jobs {
         let Some(p) = j.workspace_path.as_deref() else {
             continue;
         };
-        let ws = Workspace::open(p.into());
-        let size = if ws.root.exists() { ws.total_size() } else { 0 };
+        let Ok(node) = state.node_for_job(&j) else {
+            continue;
+        };
+        if !node.is_online() {
+            continue;
+        }
+        let size = node.files.dir_size(Path::new(p)).await.unwrap_or(0);
         sized.push((j, size));
     }
     let mut total: u64 = sized.iter().map(|(_, s)| s).sum();
@@ -84,7 +142,7 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<SweepReport> {
         if !(expired || over) {
             continue;
         }
-        let ws = Workspace::open(job.workspace_path.clone().unwrap().into());
+        let root = PathBuf::from(job.workspace_path.clone().unwrap());
         let mut archived = job.archive_path.is_some();
         if cfg.archive_dir.is_some() && !archived {
             // Never delete results that have not reached the archive.
@@ -97,11 +155,10 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<SweepReport> {
                 }
             }
         }
-        if ws.root.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&ws.root) {
-                warn!(job = job.id, "delete failed: {e}");
-                continue;
-            }
+        let node = state.node_for_job(&job)?;
+        if let Err(e) = node.files.remove_dir(&root).await {
+            warn!(job = job.id, "delete failed: {e}");
+            continue;
         }
         state.store.mark_workspace_deleted(job.id).await?;
         crate::sched::publish_job(state, job.id).await;
@@ -115,98 +172,4 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<SweepReport> {
     }
     report.scratch_bytes_after = total;
     Ok(report)
-}
-
-fn archive(ws: &Workspace, archive_dir: &Path, user: &str, job_id: i64) -> anyhow::Result<PathBuf> {
-    let dest = archive_dir
-        .join(sanitize_name(user))
-        .join(job_id.to_string());
-    std::fs::create_dir_all(&dest)?;
-    if ws.out().exists() {
-        copy_dir(&ws.out(), &dest.join("out"))?;
-        // Verify: same number of files and bytes on both sides.
-        let (n_src, b_src) = dir_stats(&ws.out());
-        let (n_dst, b_dst) = dir_stats(&dest.join("out"));
-        if n_src != n_dst || b_src != b_dst {
-            anyhow::bail!(
-                "archive verification failed: source {n_src} files/{b_src} bytes, archive {n_dst} files/{b_dst} bytes"
-            );
-        }
-    }
-    if ws.log().exists() {
-        std::fs::copy(ws.log(), dest.join("job.log"))?;
-    }
-    Ok(dest)
-}
-
-fn dir_stats(dir: &Path) -> (u64, u64) {
-    walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.metadata().ok())
-        .filter(|m| m.is_file())
-        .fold((0, 0), |(n, b), m| (n + 1, b + m.len()))
-}
-
-fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for e in walkdir::WalkDir::new(src).min_depth(1) {
-        let e = e?;
-        let rel = e.path().strip_prefix(src)?;
-        let target = dst.join(rel);
-        if e.file_type().is_dir() {
-            std::fs::create_dir_all(&target)?;
-        } else if e.file_type().is_file() {
-            std::fs::copy(e.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
-/// Copy a task's `/out` and step logs to `<archive_dir>/<user>/task-<id>/` and record it.
-/// Called after every step, so the archive always mirrors the task's results.
-pub async fn archive_task(state: &AppState, task: &mlq_core::Task) -> anyhow::Result<PathBuf> {
-    let Some(root) = state.config.retention.archive_dir.clone() else {
-        anyhow::bail!("no archive_dir configured");
-    };
-    let ws = crate::tasks::task_workspace(state, task);
-    let dest = crate::tasks::archive_dir_for(&root, task);
-    let d2 = dest.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        std::fs::create_dir_all(&d2)?;
-        if ws.out().exists() {
-            copy_dir(&ws.out(), &d2.join("out"))?;
-            // The archive may also hold files deleted from /out since; every current file must
-            // be present with the same size.
-            verify_copy(&ws.out(), &d2.join("out"))?;
-        }
-        let logs = ws.root.join("logs");
-        if logs.exists() {
-            copy_dir(&logs, &d2.join("logs"))?;
-        }
-        Ok(())
-    })
-    .await??;
-    state
-        .store
-        .set_task_archive(task.id, &dest.to_string_lossy())
-        .await?;
-    Ok(dest)
-}
-
-/// Every regular file under `src` exists under `dst` with the same size.
-fn verify_copy(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    for e in walkdir::WalkDir::new(src).min_depth(1) {
-        let e = e?;
-        if !e.file_type().is_file() {
-            continue;
-        }
-        let rel = e.path().strip_prefix(src)?;
-        let want = e.metadata()?.len();
-        let got = std::fs::metadata(dst.join(rel)).map(|m| m.len()).ok();
-        if got != Some(want) {
-            anyhow::bail!("archive verification failed for {}", rel.display());
-        }
-    }
-    Ok(())
 }

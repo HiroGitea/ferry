@@ -248,6 +248,7 @@ fn build_request(
         files: files.unwrap_or_default(),
         dry_run,
         task_id,
+        node: None,
     })
 }
 
@@ -609,6 +610,7 @@ impl MlqServer {
                 gpus: p.gpus,
             },
             keep_warm_secs: Some(p.keep_warm_secs.unwrap_or(600)),
+            node: None,
         };
         match c.create_task(&req).await {
             Ok(t) => json(&t),
@@ -720,6 +722,7 @@ impl MlqServer {
         let req = mlq_core::api::ImportArchiveRequest {
             name: p.name,
             task_name: p.task_name,
+            node: None,
         };
         match c.import_archive(&req).await {
             Ok(d) => json(&d.summary),

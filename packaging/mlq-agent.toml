@@ -1,0 +1,36 @@
+# /etc/mlq/mlq.toml on a COMPUTE node (run with `mlqd --agent`).
+# Only the sections below matter in agent mode; the rest of the daemon config is ignored.
+
+data_dir = "/var/lib/mlq"          # SSD: job workspaces live under <data_dir>/users
+runtime = "podman"
+default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
+reserve_cpus = 2
+reserve_mem = "8G"
+# managed_gpus = [0, 1]
+gpu_provider = "auto"
+
+# Datasets this node can see (NFS mounted here, or local copies). Jobs needing them should be
+# pinned with --node, or run on nodes whose `mounts` list shows the path.
+[[mounts]]
+host = "/mnt/nas/datasets"
+container = "/data"
+read_only = true
+
+[container]
+user = "1000:1000"
+userns = "keep-id"
+shm_size = "8g"
+
+[cluster]
+# How this machine appears in `mlq node list` and as job `node_id`.
+node_name = "gpu-box-1"
+
+[agent]
+# Control node (the one with the NAS, the database and the dashboard), e.g. its tailscale name.
+control_url = "http://control.tail1234.ts.net:7070"
+# Must match cluster.node_token on the control node.
+node_token = "change-me"
+# Where the control node reaches this agent. Bind to the tailscale address only.
+listen = "100.64.0.12:7071"
+# advertise_url = "http://100.64.0.12:7071"
+heartbeat_secs = 10

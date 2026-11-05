@@ -6,8 +6,6 @@ import { useMetricStream } from "../charts/sync";
 import { RANGES, type Range } from "../charts/useMetrics";
 import { Stat, cn } from "../components/ui";
 
-const GPU_LABEL = (k: string) => `GPU ${k.split(".")[1]}`;
-const GPU_COLOR = (k: string) => Number(k.split(".")[1]) || 0;
 const suffix = (s: string) => (k: string) => k.endsWith(`.${s}`);
 
 export function RangePicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
@@ -38,11 +36,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function Monitor() {
   const [rangeId, setRangeId] = useState("5m");
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const secs = RANGES.find((r) => r.id === rangeId)!.secs;
   const range: Range = { kind: "live", secs };
   const { connected } = useMetricStream();
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 5000 });
   const s = status.data;
+  const nodes = s?.nodes ?? [];
+  const primary = s?.node.id ?? null;
+  const selected = nodeId ?? primary;
+  const node = nodes.find((n) => n.info.id === selected);
+  // Host/GPU keys of non-primary nodes carry a `node.<id>.` prefix.
+  const P = selected && selected !== primary ? `node.${selected}.` : "";
+  const gpuLabel = (k: string) => `GPU ${k.replace(P, "").split(".")[1]}`;
+  const gpuColor = (k: string) => Number(k.replace(P, "").split(".")[1]) || 0;
+  const strip = (k: string) => k.replace(P, "");
 
   return (
     <div className="space-y-5">
@@ -52,54 +60,69 @@ export default function Monitor() {
           <span className={cn("h-2 w-2 rounded-full", connected ? "bg-success" : "bg-warning")} />
           {secs <= 900 ? (connected ? "live, per second" : "reconnecting") : "auto-refresh"}
         </span>
+        {nodes.length > 1 && (
+          <select
+            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+            value={selected ?? ""}
+            onChange={(e) => setNodeId(e.target.value)}
+            aria-label="node"
+          >
+            {nodes.map((n) => (
+              <option key={n.info.id} value={n.info.id}>
+                {n.info.id}
+                {n.online ? "" : " (offline)"}
+              </option>
+            ))}
+          </select>
+        )}
         <RangePicker value={rangeId} onChange={setRangeId} />
       </div>
 
-      {s && (
+      {s && node && (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Stat label="CPUs free" value={`${s.free_cpus.toFixed(1)} / ${s.node.cpus_managed}`} hint={`${s.node.cpus_total} on host`} />
-          <Stat label="Memory free" value={fmtBytes(s.free_mem)} hint={`of ${fmtBytes(s.node.mem_managed)} managed`} />
-          <Stat label="GPUs free" value={`${s.free_gpus.length} / ${s.node.gpus_managed.length}`} hint={`${s.gpus.length} detected`} />
-          <Stat label="Jobs" value={`${s.running_jobs} / ${s.queued_jobs}`} hint="running / queued" />
+          <Stat label="CPUs free" value={`${node.free_cpus.toFixed(1)} / ${node.info.cpus_managed}`} hint={`${node.info.cpus_total} on ${node.info.hostname}`} />
+          <Stat label="Memory free" value={fmtBytes(node.free_mem)} hint={`of ${fmtBytes(node.info.mem_managed)} managed`} />
+          <Stat label="GPUs free" value={`${node.free_gpus.length} / ${node.info.gpus_managed.length}`} hint={`${node.gpus.length} detected`} />
+          <Stat label="Jobs" value={`${s.running_jobs} / ${s.queued_jobs}`} hint={nodes.length > 1 ? "running / queued, all nodes" : "running / queued"} />
         </div>
       )}
 
       <Section title="System">
         <MetricChart
           title="CPU"
-          keys="host.cpu.*"
+          keys={`${P}host.cpu.*`}
           range={range}
           stacked
           yMax={100}
-          order={["host.cpu.user", "host.cpu.system", "host.cpu.iowait"]}
-          label={(k) => k.split(".")[2]}
+          order={[`${P}host.cpu.user`, `${P}host.cpu.system`, `${P}host.cpu.iowait`]}
+          label={(k) => strip(k).split(".")[2]}
         />
         <MetricChart
           title="Memory"
-          keys="host.mem.*"
+          keys={`${P}host.mem.*`}
           range={range}
           stacked
-          order={["host.mem.used", "host.mem.cache"]}
-          label={(k) => k.split(".")[2]}
+          order={[`${P}host.mem.used`, `${P}host.mem.cache`]}
+          label={(k) => strip(k).split(".")[2]}
         />
-        <MetricChart title="Load average (1 min)" keys="host.load.1" range={range} label={() => "load"} />
-        <MetricChart title="Disk I/O" keys="host.disk.*" range={range} order={["host.disk.read", "host.disk.write"]} label={(k) => k.split(".")[2]} />
-        <MetricChart title="Network" keys="host.net.*" range={range} order={["host.net.rx", "host.net.tx"]} label={(k) => k.split(".")[2]} />
+        <MetricChart title="Load average (1 min)" keys={`${P}host.load.1`} range={range} label={() => "load"} />
+        <MetricChart title="Disk I/O" keys={`${P}host.disk.*`} range={range} order={[`${P}host.disk.read`, `${P}host.disk.write`]} label={(k) => strip(k).split(".")[2]} />
+        <MetricChart title="Network" keys={`${P}host.net.*`} range={range} order={[`${P}host.net.rx`, `${P}host.net.tx`]} label={(k) => strip(k).split(".")[2]} />
         <MetricChart
           title="Storage used"
-          keys="host.scratch.used,host.archive.used"
+          keys={`${P}host.scratch.used,${P}host.archive.used`}
           range={range}
           yMax={100}
-          order={["host.scratch.used", "host.archive.used"]}
-          label={(k) => (k.startsWith("host.scratch") ? "SSD scratch" : "NAS archive")}
+          order={[`${P}host.scratch.used`, `${P}host.archive.used`]}
+          label={(k) => (strip(k).startsWith("host.scratch") ? "SSD scratch" : "NAS archive")}
         />
       </Section>
 
       <Section title="GPUs">
-        <MetricChart title="GPU utilisation" keys="gpu.*" filter={suffix("util")} range={range} yMax={100} label={GPU_LABEL} colorIndex={GPU_COLOR} empty="no GPUs" />
-        <MetricChart title="GPU memory" keys="gpu.*" filter={suffix("mem")} range={range} label={GPU_LABEL} colorIndex={GPU_COLOR} empty="no GPUs" />
-        <MetricChart title="GPU temperature" keys="gpu.*" filter={suffix("temp")} range={range} label={GPU_LABEL} colorIndex={GPU_COLOR} empty="no GPUs" />
-        <MetricChart title="GPU power" keys="gpu.*" filter={suffix("power")} range={range} label={GPU_LABEL} colorIndex={GPU_COLOR} empty="no GPUs" />
+        <MetricChart title="GPU utilisation" keys={`${P}gpu.*`} filter={suffix("util")} range={range} yMax={100} label={gpuLabel} colorIndex={gpuColor} empty="no GPUs" />
+        <MetricChart title="GPU memory" keys={`${P}gpu.*`} filter={suffix("mem")} range={range} label={gpuLabel} colorIndex={gpuColor} empty="no GPUs" />
+        <MetricChart title="GPU temperature" keys={`${P}gpu.*`} filter={suffix("temp")} range={range} label={gpuLabel} colorIndex={gpuColor} empty="no GPUs" />
+        <MetricChart title="GPU power" keys={`${P}gpu.*`} filter={suffix("power")} range={range} label={gpuLabel} colorIndex={gpuColor} empty="no GPUs" />
       </Section>
 
       <Section title="Scheduler">

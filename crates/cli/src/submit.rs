@@ -25,6 +25,9 @@ pub struct SubmitArgs {
     /// Run as the next step of this task (environment saved between steps)
     #[arg(short = 'T', long = "task")]
     pub task: Option<i64>,
+    /// Run on this node only (see `mlq node list`)
+    #[arg(short = 'N', long)]
+    pub node: Option<String>,
     /// Container image
     #[arg(short = 'i', long)]
     pub image: Option<String>,
@@ -142,6 +145,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
             args.mem = args.mem.or(parsed.mem);
             args.gpus = args.gpus.or(parsed.gpus);
             args.task = args.task.or(parsed.task);
+            args.node = args.node.or(parsed.node);
             if args.image.is_none() {
                 args.image = parsed.image;
             }
@@ -205,6 +209,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         files: BTreeMap::new(),
         dry_run: args.dry_run,
         task_id: args.task,
+        node: args.node.clone(),
     };
     Ok((req, uploads))
 }

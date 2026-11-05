@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
-use mlq_core::JobState;
-use mlq_core::api::{ClusterStatus, GpuInfo, ImageInfo, Me, NodeInfo, PullImageRequest};
+use axum::extract::{Query, State};
+use mlq_core::api::{ClusterStatus, GpuInfo, ImageInfo, Me, PullImageRequest};
+use mlq_core::{Job, JobState};
+use serde::Deserialize;
 
 use super::{ApiError, ApiResult};
 use crate::auth::AuthUser;
-use crate::sched::{NODE_ID, host_resources, inventory};
+use crate::node::Node;
 use crate::state::AppState;
 
 pub async fn me(State(state): State<Arc<AppState>>, user: AuthUser) -> ApiResult<Me> {
@@ -18,19 +19,22 @@ pub async fn me(State(state): State<Arc<AppState>>, user: AuthUser) -> ApiResult
     }))
 }
 
-pub async fn gpu_infos(state: &AppState) -> anyhow::Result<Vec<GpuInfo>> {
-    let inv = inventory(state);
-    let active = state.store.active_jobs().await?;
-    Ok(state
-        .gpu
+pub fn gpu_infos_of(_state: &AppState, node: &Node, active: &[Job]) -> Vec<GpuInfo> {
+    let managed = node.facts().inventory.gpus;
+    node.gpu
         .list()
         .into_iter()
         .map(|g| GpuInfo {
+            node_id: node.id.clone(),
             job_id: active
                 .iter()
-                .find(|j| j.state.is_active() && j.gpu_ids.contains(&g.index))
+                .find(|j| {
+                    j.state.is_active()
+                        && j.node_id.as_deref() == Some(&node.id)
+                        && j.gpu_ids.contains(&g.index)
+                })
                 .map(|j| j.id),
-            managed: inv.gpus.contains(&g.index),
+            managed: managed.contains(&g.index),
             index: g.index,
             name: g.name,
             uuid: g.uuid,
@@ -39,6 +43,16 @@ pub async fn gpu_infos(state: &AppState) -> anyhow::Result<Vec<GpuInfo>> {
             util_percent: g.util_percent,
             temp_c: g.temp_c,
         })
+        .collect()
+}
+
+pub async fn gpu_infos(state: &AppState) -> anyhow::Result<Vec<GpuInfo>> {
+    let active = state.store.active_jobs().await?;
+    Ok(state
+        .nodes
+        .all()
+        .iter()
+        .flat_map(|n| gpu_infos_of(state, n, &active))
         .collect())
 }
 
@@ -47,41 +61,50 @@ pub async fn gpus(State(state): State<Arc<AppState>>, _user: AuthUser) -> ApiRes
 }
 
 pub async fn cluster_status(state: &AppState) -> anyhow::Result<ClusterStatus> {
-    let inv = inventory(state);
-    let (host_cpus, host_mem) = host_resources();
     let active = state.store.active_jobs().await?;
-    let mut free_cpus = inv.cpus;
-    let mut free_mem = inv.mem_bytes;
-    let mut free_gpus = inv.gpus.clone();
-    for j in active.iter().filter(|j| j.state.is_active()) {
-        free_cpus -= j.resources.cpus;
-        free_mem = free_mem.saturating_sub(j.resources.mem_bytes);
-        free_gpus.retain(|g| !j.gpu_ids.contains(g));
+    let mut nodes = Vec::new();
+    for n in state.nodes.all() {
+        nodes.push(super::nodes::node_status(state, &n).await?);
     }
-    let hostname = std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "localhost".into());
+    let primary =
+        state
+            .nodes
+            .primary()
+            .map(|n| n.info())
+            .unwrap_or_else(|| mlq_core::api::NodeInfo {
+                id: "none".into(),
+                hostname: "control".into(),
+                cpus_total: 0.0,
+                mem_total: 0,
+                cpus_managed: 0.0,
+                mem_managed: 0,
+                gpus_managed: vec![],
+                runtime: "none".into(),
+                default_image: state.config.default_image.clone(),
+            });
+    let single = nodes.len() == 1;
+    let online: Vec<_> = nodes.iter().filter(|n| n.online).collect();
     Ok(ClusterStatus {
-        node: NodeInfo {
-            id: NODE_ID.into(),
-            hostname,
-            cpus_total: host_cpus,
-            mem_total: host_mem,
-            cpus_managed: inv.cpus,
-            mem_managed: inv.mem_bytes,
-            gpus_managed: inv.gpus.clone(),
-            runtime: state.executor.name().to_string(),
-            default_image: state.config.default_image.clone(),
-        },
-        gpus: gpu_infos(state).await?,
+        node: primary,
+        gpus: nodes.iter().flat_map(|n| n.gpus.clone()).collect(),
         queued_jobs: active
             .iter()
             .filter(|j| j.state == JobState::Queued)
             .count() as u32,
         running_jobs: active.iter().filter(|j| j.state.is_active()).count() as u32,
-        free_cpus: free_cpus.max(0.0),
-        free_mem,
-        free_gpus,
+        free_cpus: online.iter().map(|n| n.free_cpus).sum(),
+        free_mem: online.iter().map(|n| n.free_mem).sum(),
+        free_gpus: if single {
+            nodes[0].free_gpus.clone()
+        } else {
+            vec![]
+        },
+        free_gpu_count: online.iter().map(|n| n.free_gpus.len() as u32).sum(),
+        managed_gpu_count: online
+            .iter()
+            .map(|n| n.info.gpus_managed.len() as u32)
+            .sum(),
+        nodes,
         version: crate::VERSION.into(),
     })
 }
@@ -93,16 +116,24 @@ pub async fn status(
     Ok(Json(cluster_status(&state).await?))
 }
 
+#[derive(Deserialize)]
+pub struct NodeQuery {
+    pub node: Option<String>,
+}
+
 pub async fn images(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
+    Query(q): Query<NodeQuery>,
 ) -> ApiResult<Vec<ImageInfo>> {
-    Ok(Json(state.executor.list_images().await?))
+    let node = state.node(q.node.as_deref())?;
+    Ok(Json(node.executor.list_images().await?))
 }
 
 pub async fn pull_image(
     State(state): State<Arc<AppState>>,
-    user: AuthUser,
+    _user: AuthUser,
+    Query(q): Query<NodeQuery>,
     Json(req): Json<PullImageRequest>,
 ) -> ApiResult<serde_json::Value> {
     if !state.config.image_allowed(&req.reference) {
@@ -111,9 +142,25 @@ pub async fn pull_image(
             req.reference
         )));
     }
-    if !user.is_admin() && !state.config.allowed_images.is_empty() {
-        // Non-admins may only pull whitelisted images (already checked above).
+    // Pull on one node, or on every online node when none is given.
+    let targets: Vec<Arc<Node>> = match &q.node {
+        Some(n) => vec![state.node(Some(n))?],
+        None => state
+            .nodes
+            .all()
+            .into_iter()
+            .filter(|n| n.is_online())
+            .collect(),
+    };
+    let mut pulled = Vec::new();
+    for n in targets {
+        n.executor
+            .pull_image(&req.reference)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!("node {}: {e:#}", n.id)))?;
+        pulled.push(n.id.clone());
     }
-    state.executor.pull_image(&req.reference).await?;
-    Ok(Json(serde_json::json!({ "pulled": req.reference })))
+    Ok(Json(
+        serde_json::json!({ "pulled": req.reference, "nodes": pulled }),
+    ))
 }

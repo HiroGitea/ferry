@@ -19,7 +19,7 @@ use mlq_core::{Job, JobState, SnapshotId, Task, TaskId, TaskState};
 use tracing::{error, info, warn};
 
 use crate::executor::EnvSpec;
-use crate::sched::{NODE_ID, Outcome, finish_job, outcome_state, publish_job, wait_job};
+use crate::sched::{Outcome, finish_job, outcome_state, publish_job, wait_job};
 use crate::state::AppState;
 use crate::store::WarmSpec;
 use crate::workspace::{Workspace, sanitize_name};
@@ -42,24 +42,47 @@ pub fn publish_task(state: &AppState, task_id: TaskId) {
 pub fn task_workspace(state: &AppState, task: &Task) -> Workspace {
     match &task.workspace_path {
         Some(p) => Workspace::open(p.into()),
-        None => Workspace::open(Workspace::task_path_for(
-            &state.config.scratch_root(),
-            &task.user_name,
-            task.id,
-        )),
+        None => {
+            let root = state
+                .node_for_task(task)
+                .map(|n| n.scratch_root())
+                .unwrap_or_else(|_| state.config.scratch_root());
+            Workspace::open(Workspace::task_path_for(&root, &task.user_name, task.id))
+        }
     }
 }
 
+/// Create the task's workspace on its node. A task without a node yet is placed on `prefer`
+/// (the node of its first step) or the primary node.
 pub async fn ensure_workspace(state: &AppState, task: &Task) -> anyhow::Result<Workspace> {
-    let ws = Workspace::create(task_workspace(state, task).root)?;
-    std::fs::create_dir_all(ws.root.join("logs"))?;
+    ensure_workspace_on(state, task, None).await
+}
+
+pub async fn ensure_workspace_on(
+    state: &AppState,
+    task: &Task,
+    prefer: Option<&str>,
+) -> anyhow::Result<Workspace> {
+    let node = match (&task.node_id, prefer) {
+        (Some(n), _) => state.node(Some(n))?,
+        (None, Some(p)) => state.node(Some(p))?,
+        (None, None) => state.node(None)?,
+    };
+    if task.node_id.is_none() {
+        state.store.set_task_node(task.id, &node.id).await?;
+    }
+    let root = match &task.workspace_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => Workspace::task_path_for(&node.scratch_root(), &task.user_name, task.id),
+    };
+    node.files.ensure_workspace(&root).await?;
     if task.workspace_path.is_none() {
         state
             .store
-            .set_task_workspace(task.id, &ws.root.to_string_lossy())
+            .set_task_workspace(task.id, &root.to_string_lossy())
             .await?;
     }
-    Ok(ws)
+    Ok(Workspace::open(root))
 }
 
 /// Image the next step starts from, and the snapshot it corresponds to.
@@ -120,9 +143,14 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
         Ok(Some(_)) => return fail_early(&state, job.id, "task is closed").await,
         _ => return fail_early(&state, job.id, "task not found").await,
     };
-    let ws = match ensure_workspace(&state, &task).await {
+    let ws = match ensure_workspace_on(&state, &task, job.node_id.as_deref()).await {
         Ok(ws) => ws,
         Err(e) => return fail_early(&state, job.id, &format!("workspace: {e}")).await,
+    };
+    let task = state.store.task(tid).await.ok().flatten().unwrap_or(task);
+    let node = match state.node_for_task(&task) {
+        Ok(n) => n,
+        Err(e) => return fail_early(&state, job.id, &e.to_string()).await,
     };
     let log_path = ws.log_for(&job);
     let (image, base_snap) = head_image(&state, &task).await;
@@ -142,7 +170,7 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
     let mut reused = false;
     if let Some(c) = &task.warm_container {
         let spec = state.store.task_warm_spec(tid).await.ok().flatten();
-        let alive = state.executor.is_alive(c).await.unwrap_or(false);
+        let alive = node.executor.is_alive(c).await.unwrap_or(false);
         if alive && spec.as_ref() == Some(&want) {
             info!(task = tid, job = job.id, "reusing warm environment");
             env = Some(c.clone());
@@ -152,20 +180,20 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
                 task = tid,
                 "warm environment does not match this step; replacing it"
             );
-            let _ = state.executor.remove_env(c).await;
+            let _ = node.executor.remove_env(c).await;
         }
         let _ = state.store.clear_task_warm(tid).await;
     }
 
     if env.is_none() {
-        if base_snap.is_none() && !state.executor.image_present(&image).await.unwrap_or(false) {
+        if base_snap.is_none() && !node.executor.image_present(&image).await.unwrap_or(false) {
             let _ = state
                 .store
                 .set_state(job.id, JobState::Pulling, Some("pulling image"))
                 .await;
             publish_job(&state, job.id).await;
             tokio::select! {
-                r = state.executor.pull_image(&image) => {
+                r = node.executor.pull_image(&image) => {
                     if let Err(e) = r {
                         return fail_early(&state, job.id, &format!("image pull failed: {e}")).await;
                     }
@@ -189,10 +217,10 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
             resources: job.resources.clone(),
             gpu_ids: gpu_ids.clone(),
             workspace: ws.clone(),
-            mounts: state.config.mounts.clone(),
+            mounts: node.mounts(),
             env: BTreeMap::new(),
         };
-        match state.executor.start_env(&spec).await {
+        match node.executor.start_env(&spec).await {
             Ok(h) => env = Some(h),
             Err(e) => {
                 error!(task = tid, job = job.id, "environment start failed: {e:#}");
@@ -202,10 +230,10 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
     }
     let env = env.unwrap();
     let vars = step_env(&task, &job, &gpu_ids);
-    let exec = match state.executor.exec(&env, &job, &ws, &vars, &log_path).await {
+    let exec = match node.executor.exec(&env, &job, &ws, &vars, &log_path).await {
         Ok(h) => h,
         Err(e) => {
-            let _ = state.executor.remove_env(&env).await;
+            let _ = node.executor.remove_env(&env).await;
             return fail_early(&state, job.id, &format!("exec failed: {e}")).await;
         }
     };
@@ -214,7 +242,7 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
     let _ = state.store.set_container(job.id, &exec).await;
     let _ = state
         .store
-        .set_started(job.id, &gpu_ids, NODE_ID, &ws_str)
+        .set_started(job.id, &gpu_ids, &node.id, &ws_str)
         .await;
     let _ = state.store.touch_task(tid).await;
     info!(task = tid, job = job.id, reused, gpus = ?gpu_ids, "step started");
@@ -239,20 +267,23 @@ async fn watch_step(
     let base_snap = job.base_snapshot_id;
     let image = job.image.clone();
     let gpu_ids = job.gpu_ids.clone();
+    let Ok(node) = state.node_for_job(&job) else {
+        return fail_early(state, job.id, "node not found").await;
+    };
     let outcome = wait_job(state, &job, &exec, token).await;
-    let _ = state.executor.cleanup(&exec).await;
+    let _ = node.executor.cleanup(&exec).await;
 
     // Save or discard the environment.
     let mut produced: Option<SnapshotId> = None;
     let mut note: Option<String> = None;
     let Some(task_now) = state.store.task(tid).await.ok().flatten() else {
-        let _ = state.executor.remove_env(&env).await;
+        let _ = node.executor.remove_env(&env).await;
         return fail_early(state, job.id, "task vanished").await;
     };
     if matches!(outcome, Outcome::Exited(0)) {
         let mut next_image = image.clone();
-        if state.executor.supports_snapshots() {
-            match save_snapshot(state, tid, base_snap, job.id, &env).await {
+        if node.executor.supports_snapshots() {
+            match save_snapshot(state, &node, tid, base_snap, job.id, &env).await {
                 Ok((sid, tag)) => {
                     produced = Some(sid);
                     next_image = tag;
@@ -266,8 +297,8 @@ async fn watch_step(
             }
         }
         let keep = task_now.keep_warm_secs;
-        let idle = state.executor.env_idle(&env).await.unwrap_or(false);
-        if keep > 0 && idle && (produced.is_some() || !state.executor.supports_snapshots()) {
+        let idle = node.executor.env_idle(&env).await.unwrap_or(false);
+        if keep > 0 && idle && (produced.is_some() || !node.executor.supports_snapshots()) {
             let until = Utc::now() + chrono::Duration::seconds(keep as i64);
             let spec = WarmSpec {
                 image: next_image,
@@ -277,18 +308,18 @@ async fn watch_step(
             };
             if let Err(e) = state.store.set_task_warm(tid, &env, until, &spec).await {
                 warn!(task = tid, "recording warm container failed: {e:#}");
-                let _ = state.executor.remove_env(&env).await;
+                let _ = node.executor.remove_env(&env).await;
             }
         } else {
             if keep > 0 && !idle {
                 note = Some("background processes were still running after the step; environment not kept warm".into());
             }
-            let _ = state.executor.remove_env(&env).await;
+            let _ = node.executor.remove_env(&env).await;
         }
     } else {
         // Roll back: discard everything since HEAD.
-        let _ = state.executor.remove_env(&env).await;
-        if state.executor.supports_snapshots() {
+        let _ = node.executor.remove_env(&env).await;
+        if node.executor.supports_snapshots() {
             note = Some(match base_snap {
                 Some(s) => format!("environment rolled back to snapshot {s}"),
                 None => "environment rolled back to the base image".into(),
@@ -328,6 +359,7 @@ async fn watch_step(
 /// Commit the environment as the task's new HEAD and prune old snapshots.
 async fn save_snapshot(
     state: &AppState,
+    node: &crate::node::Node,
     tid: TaskId,
     parent: Option<SnapshotId>,
     job_id: i64,
@@ -336,7 +368,7 @@ async fn save_snapshot(
     let seq = state.store.next_snapshot_seq(tid).await?;
     let tag = snapshot_image(tid, seq);
     let started = std::time::Instant::now();
-    let size = state.executor.commit(&env.to_string(), &tag).await?;
+    let size = node.executor.commit(&env.to_string(), &tag).await?;
     let snap = state
         .store
         .create_snapshot(tid, parent, Some(job_id), &tag, size)
@@ -352,6 +384,9 @@ pub async fn prune_snapshots(state: &AppState, tid: TaskId) {
     let Ok(Some(task)) = state.store.task(tid).await else {
         return;
     };
+    let Ok(node) = state.node_for_task(&task) else {
+        return;
+    };
     let Ok(snaps) = state.store.snapshots(tid).await else {
         return;
     };
@@ -363,7 +398,7 @@ pub async fn prune_snapshots(state: &AppState, tid: TaskId) {
         return;
     }
     for s in &candidates[..candidates.len() - KEEP_SNAPSHOTS] {
-        if let Err(e) = state.executor.remove_image(&s.image).await {
+        if let Err(e) = node.executor.remove_image(&s.image).await {
             warn!(snapshot = s.id, "removing image failed: {e:#}");
         }
         let _ = state.store.mark_snapshot_deleted(s.id).await;
@@ -373,7 +408,9 @@ pub async fn prune_snapshots(state: &AppState, tid: TaskId) {
 /// Stop a task's warm environment, if any.
 pub async fn drop_warm(state: &AppState, task: &Task) {
     if let Some(c) = &task.warm_container {
-        let _ = state.executor.remove_env(c).await;
+        if let Ok(node) = state.node_for_task(task) {
+            let _ = node.executor.remove_env(c).await;
+        }
         let _ = state.store.clear_task_warm(task.id).await;
     }
 }
@@ -415,10 +452,13 @@ pub async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
             continue;
         }
         let exec = job.container_id.clone().unwrap_or_default();
-        let env = state.executor.env_of(&exec);
+        let Ok(node) = state.node_for_job(&job) else {
+            continue;
+        };
+        let env = node.executor.env_of(&exec);
         let alive = job.state == JobState::Running
             && env.is_some()
-            && state.executor.is_alive(&exec).await.unwrap_or(false);
+            && node.executor.is_alive(&exec).await.unwrap_or(false);
         if alive {
             info!(job = job.id, task = tid, "re-attaching to running step");
             let st = state.clone();
@@ -433,7 +473,7 @@ pub async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
         }
         warn!(job = job.id, "task step cannot be re-attached; failing it");
         if let Some(e) = env.or(job.container_id.clone()) {
-            let _ = state.executor.remove_env(&e).await;
+            let _ = node.executor.remove_env(&e).await;
         }
         state
             .store
@@ -447,9 +487,9 @@ pub async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
     }
     for t in state.store.warm_tasks().await? {
         let keep = t.warm_until.map(|u| u > Utc::now()).unwrap_or(false)
-            && match &t.warm_container {
-                Some(c) => state.executor.is_alive(c).await.unwrap_or(false),
-                None => false,
+            && match (&t.warm_container, state.node_for_task(&t)) {
+                (Some(c), Ok(node)) => node.executor.is_alive(c).await.unwrap_or(false),
+                _ => false,
             };
         if !keep {
             drop_warm(state, &t).await;
@@ -508,9 +548,10 @@ pub async fn close(state: &AppState, task: &Task) -> anyhow::Result<()> {
 /// archive if one is configured).
 pub async fn delete(state: &AppState, task: &Task) -> anyhow::Result<()> {
     drop_warm(state, task).await;
+    let node = state.node_for_task(task)?;
     for s in state.store.snapshots(task.id).await? {
         if !s.deleted {
-            let _ = state.executor.remove_image(&s.image).await;
+            let _ = node.executor.remove_image(&s.image).await;
             let _ = state.store.mark_snapshot_deleted(s.id).await;
         }
     }
@@ -518,7 +559,7 @@ pub async fn delete(state: &AppState, task: &Task) -> anyhow::Result<()> {
         let archived_ok = state.config.retention.archive_dir.is_none()
             || crate::retention::archive_task(state, task).await.is_ok();
         if archived_ok {
-            let _ = std::fs::remove_dir_all(p);
+            let _ = node.files.remove_dir(std::path::Path::new(p)).await;
         } else {
             anyhow::bail!("archiving the task failed; workspace kept at {p}");
         }

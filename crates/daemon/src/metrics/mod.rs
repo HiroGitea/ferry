@@ -362,26 +362,23 @@ impl MetricsHub {
     }
 
     /// Add one collection tick. `samples` = (key, unit, value).
-    pub async fn ingest(
-        &self,
-        t: i64,
-        samples: Vec<(String, &'static str, f32)>,
-    ) -> anyhow::Result<()> {
+    pub async fn ingest(&self, t: i64, samples: Vec<(String, String, f32)>) -> anyhow::Result<()> {
         if self.pool.is_none() {
             return Ok(());
         }
         // Resolve ids for new series outside the lock.
-        let missing: Vec<(String, &'static str)> = {
+        let missing: Vec<(String, String)> = {
             let map = self.series.lock().unwrap();
             samples
                 .iter()
                 .filter(|(k, _, _)| !map.contains_key(k))
-                .map(|(k, u, _)| (k.clone(), *u))
+                .map(|(k, u, _)| (k.clone(), u.clone()))
                 .collect()
         };
         let mut new_ids = Vec::new();
         for (k, u) in missing {
-            new_ids.push((k.clone(), u, self.metric_id(&k, u).await?));
+            let id = self.metric_id(&k, &u).await?;
+            new_ids.push((k, u, id));
         }
         let mut writes = Vec::new();
         let mut tick = MetricTick {
@@ -391,8 +388,7 @@ impl MetricsHub {
         {
             let mut map = self.series.lock().unwrap();
             for (k, u, id) in new_ids {
-                map.entry(k)
-                    .or_insert_with(|| Series::new(id, u.to_string(), t));
+                map.entry(k).or_insert_with(|| Series::new(id, u, t));
             }
             for (k, _, v) in &samples {
                 if !v.is_finite() {
@@ -825,7 +821,7 @@ mod tests {
         let begin = end - 3 * 3600;
         for t in begin..=end {
             let v = ((t / 60) % 60) as f32;
-            hub.ingest(t, vec![("test.v".into(), "u", v)])
+            hub.ingest(t, vec![("test.v".into(), "u".into(), v)])
                 .await
                 .unwrap();
         }

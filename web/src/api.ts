@@ -48,6 +48,7 @@ export interface Job {
   task_id: number | null;
   base_snapshot_id: number | null;
   snapshot_id: number | null;
+  requested_node: string | null;
 }
 
 export interface Task {
@@ -60,6 +61,7 @@ export interface Task {
   keep_warm_secs: number;
   state: "open" | "closed" | "deleted";
   head_snapshot_id: number | null;
+  node_id: string | null;
   workspace_path: string | null;
   archive_path: string | null;
   warm_container: string | null;
@@ -143,6 +145,7 @@ export interface Me {
 }
 
 export interface GpuInfo {
+  node_id: string;
   index: number;
   name: string;
   uuid: string;
@@ -154,24 +157,44 @@ export interface GpuInfo {
   job_id: number | null;
 }
 
+export interface NodeInfo {
+  id: string;
+  hostname: string;
+  cpus_total: number;
+  mem_total: number;
+  cpus_managed: number;
+  mem_managed: number;
+  gpus_managed: number[];
+  runtime: string;
+  default_image: string;
+}
+
+export interface NodeStatus {
+  info: NodeInfo;
+  online: boolean;
+  local: boolean;
+  url: string | null;
+  last_seen: string;
+  gpus: GpuInfo[];
+  running_jobs: number;
+  free_cpus: number;
+  free_mem: number;
+  free_gpus: number[];
+  mounts: string[];
+  supports_snapshots: boolean;
+}
+
 export interface ClusterStatus {
-  node: {
-    id: string;
-    hostname: string;
-    cpus_total: number;
-    mem_total: number;
-    cpus_managed: number;
-    mem_managed: number;
-    gpus_managed: number[];
-    runtime: string;
-    default_image: string;
-  };
+  node: NodeInfo;
+  nodes: NodeStatus[];
   gpus: GpuInfo[];
   queued_jobs: number;
   running_jobs: number;
   free_cpus: number;
   free_mem: number;
   free_gpus: number[];
+  free_gpu_count: number;
+  managed_gpu_count: number;
   version: string;
 }
 
@@ -285,6 +308,7 @@ export const api = {
   me: () => request<Me>("GET", "/me"),
   status: () => request<ClusterStatus>("GET", "/status"),
   gpus: () => request<GpuInfo[]>("GET", "/gpus"),
+  nodes: () => request<NodeStatus[]>("GET", "/nodes"),
   jobs: (p: { state?: string; user?: string; all?: boolean; limit?: number }) =>
     request<Job[]>("GET", `/jobs${qs(p)}`),
   job: (id: number) => request<Job>("GET", `/jobs/${id}`),
@@ -312,7 +336,7 @@ export const api = {
   submit: (body: Record<string, unknown>) => request<{ jobs: Job[]; estimate: string }>("POST", "/jobs", body),
   tasks: (p: { all?: boolean; user?: string }) => request<TaskSummary[]>("GET", `/tasks${qs(p)}`),
   task: (id: number) => request<TaskDetail>("GET", `/tasks/${id}`),
-  createTask: (body: { name: string; image?: string; resources?: ResourceOverrides; keep_warm_secs?: number }) =>
+  createTask: (body: { name: string; image?: string; resources?: ResourceOverrides; keep_warm_secs?: number; node?: string }) =>
     request<TaskDetail>("POST", "/tasks", body),
   updateTask: (id: number, body: { name?: string; keep_warm_secs?: number; resources?: ResourceOverrides }) =>
     request<TaskDetail>("PATCH", `/tasks/${id}`, body),

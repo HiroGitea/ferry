@@ -136,6 +136,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TaskCmd,
     },
+    /// Compute nodes (control node + registered agents)
+    Node {
+        #[command(subcommand)]
+        cmd: NodeCmd,
+    },
     /// Task archives (.7z) on the NAS: list, inspect, restore
     Archive {
         #[command(subcommand)]
@@ -172,6 +177,9 @@ enum TaskCmd {
         /// Keep the environment running after a successful step, e.g. 10m (0 = off)
         #[arg(long, default_value = "10m")]
         keep_warm: String,
+        /// Pin the task to a node (default: the node of its first step)
+        #[arg(short = 'N', long)]
+        node: Option<String>,
     },
     #[command(alias = "ls")]
     List {
@@ -235,6 +243,14 @@ enum TaskCmd {
 }
 
 #[derive(Subcommand)]
+enum NodeCmd {
+    #[command(alias = "ls")]
+    List,
+    /// Forget an offline agent (admin)
+    Rm { id: String },
+}
+
+#[derive(Subcommand)]
 enum ArchiveCmd {
     /// Archives on the NAS
     #[command(alias = "ls")]
@@ -246,6 +262,9 @@ enum ArchiveCmd {
         name: String,
         #[arg(long)]
         name_as: Option<String>,
+        /// Node to restore onto (needs a container runtime)
+        #[arg(short = 'N', long)]
+        node: Option<String>,
     },
 }
 
@@ -596,6 +615,7 @@ async fn real_main() -> anyhow::Result<()> {
                     mem,
                     gpus,
                     keep_warm,
+                    node,
                 } => {
                     let req = mlq_core::api::CreateTaskRequest {
                         name: name.clone(),
@@ -606,6 +626,7 @@ async fn real_main() -> anyhow::Result<()> {
                             gpus: *gpus,
                         },
                         keep_warm_secs: Some(secs(keep_warm)?),
+                        node: node.clone(),
                     };
                     let d = c.create_task(&req).await?;
                     if !cli.json {
@@ -701,6 +722,23 @@ async fn real_main() -> anyhow::Result<()> {
                 }
             }
         }
+        Cmd::Node { cmd } => {
+            let c = client(&cli)?;
+            match cmd {
+                NodeCmd::List => {
+                    let n = c.nodes().await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&n)?);
+                    } else {
+                        fmt::print_nodes(&n);
+                    }
+                }
+                NodeCmd::Rm { id } => {
+                    c.delete_node(id).await?;
+                    println!("node {id} removed");
+                }
+            }
+        }
         Cmd::Archive { cmd } => {
             let c = client(&cli)?;
             match cmd {
@@ -720,11 +758,16 @@ async fn real_main() -> anyhow::Result<()> {
                         fmt::print_manifest(&m);
                     }
                 }
-                ArchiveCmd::Import { name, name_as } => {
+                ArchiveCmd::Import {
+                    name,
+                    name_as,
+                    node,
+                } => {
                     let d = c
                         .import_archive(&mlq_core::api::ImportArchiveRequest {
                             name: name.clone(),
                             task_name: name_as.clone(),
+                            node: node.clone(),
                         })
                         .await?;
                     println!(

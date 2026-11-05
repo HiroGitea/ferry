@@ -120,6 +120,9 @@ pub struct Job {
     /// Snapshot saved after this step succeeded.
     #[serde(default)]
     pub snapshot_id: Option<i64>,
+    /// Node the user asked for (`--node`); `None` = any.
+    #[serde(default)]
+    pub requested_node: Option<String>,
 }
 
 impl Job {

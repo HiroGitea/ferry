@@ -4,6 +4,7 @@ pub mod admin;
 pub mod info;
 pub mod jobs;
 pub mod metrics;
+pub mod nodes;
 pub mod sse;
 pub mod tasks;
 pub mod web;
@@ -111,6 +112,8 @@ pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/metrics/keys", get(metrics::keys))
         .route("/metrics/query", get(metrics::query))
         .route("/metrics/stream", get(metrics::stream))
+        .route("/nodes", get(nodes::list))
+        .route("/nodes/{id}", delete(nodes::delete))
         .layer(axum::middleware::from_fn_with_state(state, require_auth))
 }
 
@@ -124,8 +127,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.clone(),
             require_auth,
         ));
+    // Agents register with the cluster node token (not a user token).
+    let agents = Router::new()
+        .route("/api/v1/nodes/register", post(nodes::register))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            nodes::require_node_token,
+        ));
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .merge(agents)
         .nest("/api/v1", api_v1(state.clone()))
         .merge(mcp);
     app = web::mount(app);

@@ -9,7 +9,7 @@
 //!    free resources and the user's quota. Smaller jobs may therefore run ahead of a large
 //!    job that is waiting (simple backfill, no reservations).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,17 @@ use crate::user::{Quota, UserId};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assignment {
     pub job_id: JobId,
+    pub node_id: String,
     pub gpu_ids: Vec<u32>,
+}
+
+/// One schedulable node and its managed resources.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeInventory {
+    pub id: String,
+    pub inventory: Inventory,
+    /// Offline nodes keep their running jobs' resources accounted but take no new work.
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,7 +49,7 @@ pub enum Decision {
 }
 
 pub struct SchedulerInput<'a> {
-    pub inventory: &'a Inventory,
+    pub nodes: &'a [NodeInventory],
     /// All non-terminal jobs plus any terminal jobs referenced by `depends_on`.
     pub jobs: &'a [Job],
     pub quotas: &'a HashMap<UserId, Quota>,
@@ -48,6 +58,8 @@ pub struct SchedulerInput<'a> {
     /// GPUs a task's warm container already has attached; steps of that task get them back
     /// when they are free so the warm container can be reused.
     pub gpu_affinity: &'a HashMap<i64, Vec<u32>>,
+    /// Node each task's environment lives on (steps of that task must run there).
+    pub task_nodes: &'a HashMap<i64, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,31 +71,57 @@ struct Free {
 
 pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
     let SchedulerInput {
-        inventory,
+        nodes,
         jobs,
         quotas,
         fair_usage,
         gpu_affinity,
+        task_nodes,
     } = input;
     let by_id: HashMap<JobId, &Job> = jobs.iter().map(|j| (j.id, j)).collect();
 
-    // Resources currently in use by active jobs.
-    let mut free = Free {
-        cpus: inventory.cpus,
-        mem: inventory.mem_bytes,
-        gpus: inventory.gpus.clone(),
-    };
+    // Free resources per node after subtracting active jobs.
+    let mut free: Vec<(String, bool, Free)> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n.id.clone(),
+                n.online,
+                Free {
+                    cpus: n.inventory.cpus,
+                    mem: n.inventory.mem_bytes,
+                    gpus: n.inventory.gpus.clone(),
+                },
+            )
+        })
+        .collect();
     let mut running_jobs: HashMap<UserId, u32> = HashMap::new();
     let mut running_gpus: HashMap<UserId, u32> = HashMap::new();
-    let mut used_gpus: HashSet<u32> = HashSet::new();
     for j in jobs.iter().filter(|j| j.state.is_active()) {
-        free.cpus -= j.resources.cpus;
-        free.mem = free.mem.saturating_sub(j.resources.mem_bytes);
-        used_gpus.extend(j.gpu_ids.iter().copied());
+        if let Some((_, _, f)) = free
+            .iter_mut()
+            .find(|(id, _, _)| Some(id.as_str()) == j.node_id.as_deref())
+        {
+            f.cpus -= j.resources.cpus;
+            f.mem = f.mem.saturating_sub(j.resources.mem_bytes);
+            f.gpus.retain(|g| !j.gpu_ids.contains(g));
+        }
         *running_jobs.entry(j.user_id).or_default() += 1;
         *running_gpus.entry(j.user_id).or_default() += j.gpu_ids.len() as u32;
     }
-    free.gpus.retain(|g| !used_gpus.contains(g));
+    let max_inv =
+        |pick: fn(&Inventory) -> f64| nodes.iter().map(|n| pick(&n.inventory)).fold(0.0, f64::max);
+    let biggest_cpus = max_inv(|i| i.cpus);
+    let biggest_mem = nodes
+        .iter()
+        .map(|n| n.inventory.mem_bytes)
+        .max()
+        .unwrap_or(0);
+    let biggest_gpus = nodes
+        .iter()
+        .map(|n| n.inventory.gpus.len())
+        .max()
+        .unwrap_or(0);
 
     let mut decisions = Vec::new();
     let mut candidates: Vec<&Job> = Vec::new();
@@ -135,21 +173,46 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                 continue;
             }
         }
-        // Impossible requests.
-        if j.resources.cpus > inventory.cpus
-            || j.resources.mem_bytes > inventory.mem_bytes
-            || j.resources.gpus as usize > inventory.gpus.len()
+        // Requests no node could ever satisfy.
+        let pinned = j
+            .task_id
+            .and_then(|t| task_nodes.get(&t).cloned())
+            .or_else(|| j.requested_node.clone());
+        let (cap_cpus, cap_mem, cap_gpus) = match &pinned {
+            Some(n) => match nodes.iter().find(|x| &x.id == n) {
+                Some(x) => (
+                    x.inventory.cpus,
+                    x.inventory.mem_bytes,
+                    x.inventory.gpus.len(),
+                ),
+                None => {
+                    decisions.push(Decision::Reject {
+                        job_id: j.id,
+                        reason: format!("node {n} is not registered"),
+                    });
+                    continue;
+                }
+            },
+            None => (biggest_cpus, biggest_mem, biggest_gpus),
+        };
+        if j.resources.cpus > cap_cpus
+            || j.resources.mem_bytes > cap_mem
+            || j.resources.gpus as usize > cap_gpus
         {
             decisions.push(Decision::Reject {
                 job_id: j.id,
                 reason: format!(
-                    "request ({} cpus, {} bytes, {} gpus) exceeds managed inventory ({} cpus, {} bytes, {} gpus)",
+                    "request ({} cpus, {} bytes, {} gpus) exceeds {} ({} cpus, {} bytes, {} gpus)",
                     j.resources.cpus,
                     j.resources.mem_bytes,
                     j.resources.gpus,
-                    inventory.cpus,
-                    inventory.mem_bytes,
-                    inventory.gpus.len()
+                    pinned
+                        .as_deref()
+                        .map(|n| format!("node {n}"))
+                        .unwrap_or_else(|| "every node".into()),
+                    cap_cpus,
+                    cap_mem,
+                    cap_gpus
                 ),
             });
             continue;
@@ -191,32 +254,54 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                 continue;
             }
         }
-        let fits = j.resources.cpus <= free.cpus + 1e-9
-            && j.resources.mem_bytes <= free.mem
-            && (j.resources.gpus as usize) <= free.gpus.len();
-        if !fits {
+        let want = j.resources.gpus as usize;
+        let pinned = j
+            .task_id
+            .and_then(|t| task_nodes.get(&t).cloned())
+            .or_else(|| j.requested_node.clone());
+        let pref = j.task_id.and_then(|t| gpu_affinity.get(&t));
+        // First fit over online nodes (pinned node only, if any); nodes holding the task's warm
+        // GPUs are tried first.
+        let mut order: Vec<usize> = (0..free.len())
+            .filter(|&i| free[i].1 && pinned.as_deref().map(|p| p == free[i].0).unwrap_or(true))
+            .collect();
+        if let Some(p) = pref {
+            order.sort_by_key(|&i| !p.iter().all(|g| free[i].2.gpus.contains(g)));
+        }
+        let slot = order.into_iter().find(|&i| {
+            let f = &free[i].2;
+            j.resources.cpus <= f.cpus + 1e-9
+                && j.resources.mem_bytes <= f.mem
+                && want <= f.gpus.len()
+        });
+        let Some(i) = slot else {
             decisions.push(Decision::Wait {
                 job_id: j.id,
-                reason: "waiting for resources".into(),
+                reason: match &pinned {
+                    Some(n) if !free.iter().any(|(id, on, _)| id == n && *on) => {
+                        format!("node {n} is offline")
+                    }
+                    Some(n) => format!("waiting for resources on node {n}"),
+                    None => "waiting for resources".into(),
+                },
             });
             continue;
-        }
-        let want = j.resources.gpus as usize;
-        let gpu_ids: Vec<u32> = match j.task_id.and_then(|t| gpu_affinity.get(&t)) {
-            Some(pref)
-                if want > 0 && pref.len() == want && pref.iter().all(|g| free.gpus.contains(g)) =>
-            {
-                free.gpus.retain(|g| !pref.contains(g));
-                pref.clone()
-            }
-            _ => free.gpus.drain(..want).collect(),
         };
-        free.cpus -= j.resources.cpus;
-        free.mem -= j.resources.mem_bytes;
+        let f = &mut free[i].2;
+        let gpu_ids: Vec<u32> = match pref {
+            Some(p) if want > 0 && p.len() == want && p.iter().all(|g| f.gpus.contains(g)) => {
+                f.gpus.retain(|g| !p.contains(g));
+                p.clone()
+            }
+            _ => f.gpus.drain(..want).collect(),
+        };
+        f.cpus -= j.resources.cpus;
+        f.mem -= j.resources.mem_bytes;
         *running_jobs.entry(j.user_id).or_default() += 1;
         *running_gpus.entry(j.user_id).or_default() += j.resources.gpus;
         decisions.push(Decision::Start(Assignment {
             job_id: j.id,
+            node_id: free[i].0.clone(),
             gpu_ids,
         }));
     }
@@ -262,7 +347,16 @@ mod tests {
             task_id: None,
             base_snapshot_id: None,
             snapshot_id: None,
+            requested_node: None,
         }
+    }
+
+    fn one(inv: &Inventory) -> Vec<NodeInventory> {
+        vec![NodeInventory {
+            id: "local".into(),
+            inventory: inv.clone(),
+            online: true,
+        }]
     }
 
     fn inv() -> Inventory {
@@ -279,12 +373,14 @@ mod tests {
         quotas: HashMap<UserId, Quota>,
         fair: HashMap<UserId, f64>,
     ) -> Vec<Decision> {
+        let nodes = one(inv);
         schedule(SchedulerInput {
-            inventory: inv,
+            nodes: &nodes,
             jobs,
             quotas: &quotas,
             fair_usage: &fair,
             gpu_affinity: &HashMap::new(),
+            task_nodes: &HashMap::new(),
         })
     }
 
@@ -323,23 +419,27 @@ mod tests {
         j.task_id = Some(5);
         let mut aff = HashMap::new();
         aff.insert(5, vec![2, 3]);
+        let nodes = one(&inv());
         let d = schedule(SchedulerInput {
-            inventory: &inv(),
+            nodes: &nodes,
             jobs: &[j.clone()],
             quotas: &HashMap::new(),
             fair_usage: &HashMap::new(),
             gpu_affinity: &aff,
+            task_nodes: &HashMap::new(),
         });
         assert_eq!(starts(&d), vec![(1, vec![2, 3])]);
         // preferred GPU busy -> falls back to first fit
         let mut busy = job(2, 2, 1.0, 1, JobState::Running);
         busy.gpu_ids = vec![3];
+        busy.node_id = Some("local".into());
         let d = schedule(SchedulerInput {
-            inventory: &inv(),
+            nodes: &nodes,
             jobs: &[j, busy],
             quotas: &HashMap::new(),
             fair_usage: &HashMap::new(),
             gpu_affinity: &aff,
+            task_nodes: &HashMap::new(),
         });
         assert_eq!(starts(&d), vec![(1, vec![0, 1])]);
     }
@@ -366,9 +466,79 @@ mod tests {
     }
 
     #[test]
+    fn multi_node_placement() {
+        let nodes = vec![
+            NodeInventory {
+                id: "a".into(),
+                inventory: Inventory {
+                    cpus: 4.0,
+                    mem_bytes: 16 << 30,
+                    gpus: vec![0],
+                },
+                online: true,
+            },
+            NodeInventory {
+                id: "b".into(),
+                inventory: Inventory {
+                    cpus: 8.0,
+                    mem_bytes: 64 << 30,
+                    gpus: vec![0, 1],
+                },
+                online: true,
+            },
+            NodeInventory {
+                id: "c".into(),
+                inventory: Inventory {
+                    cpus: 8.0,
+                    mem_bytes: 64 << 30,
+                    gpus: vec![0, 1],
+                },
+                online: false,
+            },
+        ];
+        let mut want2 = job(1, 1, 1.0, 2, JobState::Queued); // only fits b
+        let mut pinned_c = job(2, 1, 1.0, 0, JobState::Queued);
+        pinned_c.requested_node = Some("c".into()); // offline
+        let mut step = job(3, 1, 1.0, 1, JobState::Queued);
+        step.task_id = Some(7); // task lives on a
+        let mut tn = HashMap::new();
+        tn.insert(7, "a".to_string());
+        let mut too_big = job(4, 1, 1.0, 3, JobState::Queued);
+        too_big.requested_node = None;
+        want2.priority = 1;
+        let d = schedule(SchedulerInput {
+            nodes: &nodes,
+            jobs: &[want2, pinned_c, step, too_big],
+            quotas: &HashMap::new(),
+            fair_usage: &HashMap::new(),
+            gpu_affinity: &HashMap::new(),
+            task_nodes: &tn,
+        });
+        let starts: Vec<(JobId, String, Vec<u32>)> = d
+            .iter()
+            .filter_map(|x| match x {
+                Decision::Start(a) => Some((a.job_id, a.node_id.clone(), a.gpu_ids.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            vec![(1, "b".into(), vec![0, 1]), (3, "a".into(), vec![0])]
+        );
+        assert!(d.iter().any(
+            |x| matches!(x, Decision::Wait { job_id: 2, reason } if reason.contains("offline"))
+        ));
+        assert!(
+            d.iter()
+                .any(|x| matches!(x, Decision::Reject { job_id: 4, .. }))
+        );
+    }
+
+    #[test]
     fn running_jobs_consume_resources() {
         let mut running = job(1, 1, 4.0, 2, JobState::Running);
         running.gpu_ids = vec![1, 2];
+        running.node_id = Some("local".into());
         let jobs = vec![
             running,
             job(2, 2, 4.0, 2, JobState::Queued),

@@ -15,10 +15,11 @@ use serde::Deserialize;
 
 use super::{ApiError, ApiResult};
 use crate::auth::AuthUser;
-use crate::sched::{inventory, publish_job};
+use crate::node::{Files, LocalFiles, Node};
+use crate::sched::publish_job;
 use crate::state::AppState;
 use crate::store::NewJob;
-use crate::workspace::{Workspace, read_log};
+use crate::workspace::Workspace;
 
 /// Expand "0-3", "1,4,7", "0-2,5" into indices.
 pub fn expand_array(spec: &str) -> Result<Vec<u32>, ApiError> {
@@ -84,7 +85,22 @@ fn validate(
 }
 
 fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
-    let inv = inventory(state);
+    // Capacity of the largest online node; free resources summed over online nodes.
+    let nodes = state.nodes.all();
+    let online: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.is_online())
+        .map(|n| n.facts().inventory)
+        .collect();
+    let inv = mlq_core::Inventory {
+        cpus: online.iter().map(|i| i.cpus).fold(0.0, f64::max),
+        mem_bytes: online.iter().map(|i| i.mem_bytes).max().unwrap_or(0),
+        gpus: online
+            .iter()
+            .max_by_key(|i| i.gpus.len())
+            .map(|i| i.gpus.clone())
+            .unwrap_or_default(),
+    };
     if res.cpus > inv.cpus || res.mem_bytes > inv.mem_bytes || res.gpus as usize > inv.gpus.len() {
         return format!(
             "will never run: request exceeds managed inventory ({} cpus, {} mem, {} gpus)",
@@ -93,9 +109,9 @@ fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
             inv.gpus.len()
         );
     }
-    let mut free_cpus = inv.cpus;
-    let mut free_mem = inv.mem_bytes;
-    let mut free_gpus = inv.gpus.len();
+    let mut free_cpus: f64 = online.iter().map(|i| i.cpus).sum();
+    let mut free_mem: u64 = online.iter().map(|i| i.mem_bytes).sum();
+    let mut free_gpus: usize = online.iter().map(|i| i.gpus.len()).sum();
     let mut queued_ahead = 0;
     for j in active {
         if j.state.is_active() {
@@ -148,6 +164,13 @@ pub async fn submit(
         }
         None => None,
     };
+    if let Some(n) = &req.node {
+        if state.nodes.get(n).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "node '{n}' is not registered"
+            )));
+        }
+    }
     let base = task
         .as_ref()
         .map(|t| t.resources.clone())
@@ -228,19 +251,28 @@ pub async fn submit(
                 array_index: idx,
                 time_limit_secs: req.time_limit_secs,
                 task_id: req.task_id,
+                requested_node: req.node.clone(),
             })
             .await?;
         // Inline files are written now so they are present even if the job is held.
         if !req.files.is_empty() {
-            let ws = match &task {
-                Some(t) => crate::tasks::ensure_workspace(&state, t).await?,
-                None => Workspace::create(Workspace::path_for(
-                    &state.config.scratch_root(),
-                    &user.0.name,
-                    job.id,
-                ))?,
-            };
-            ws.write_files(&req.files)?;
+            match &task {
+                Some(t) => {
+                    let ws = crate::tasks::ensure_workspace(&state, t).await?;
+                    let t = state.store.task(t.id).await?.unwrap();
+                    state
+                        .node_for_task(&t)?
+                        .files
+                        .write_files(&ws.root, &req.files)
+                        .await?;
+                }
+                None => {
+                    let node = staging_node(&state, &job).await?;
+                    let root = Workspace::path_for(&node.scratch_root(), &user.0.name, job.id);
+                    node.files.ensure_workspace(&root).await?;
+                    node.files.write_files(&root, &req.files).await?;
+                }
+            }
         }
         state.events.publish(Event::JobUpdated { job: job.clone() });
         jobs.push(job);
@@ -327,9 +359,9 @@ pub async fn cancel(
         JobState::Starting | JobState::Pulling | JobState::Running => {
             if !state.request_cancel(id) {
                 // No watcher task (should not happen); force the state.
-                if let Some(h) = &job.container_id {
-                    let _ = state.executor.kill(h).await;
-                    let _ = state.executor.cleanup(h).await;
+                if let (Some(h), Ok(node)) = (&job.container_id, state.node_for_job(&job)) {
+                    let _ = node.executor.kill(h).await;
+                    let _ = node.executor.cleanup(h).await;
                 }
                 state
                     .store
@@ -367,26 +399,34 @@ pub async fn release(
     Ok(Json(state.store.job(id).await?.unwrap()))
 }
 
-fn workspace_of(state: &AppState, job: &Job) -> Workspace {
+/// Where a job's files live: on its node, or in the control node's archive once the scratch
+/// workspace was removed (archives have the same layout: out/, job.log or logs/<id>.log).
+fn files_of(state: &AppState, job: &Job) -> Result<(Arc<dyn Files>, Workspace), ApiError> {
     if job.workspace_deleted {
         if let Some(a) = &job.archive_path {
-            // Archives have the same layout (out/, job.log or logs/<id>.log) as workspaces.
-            return Workspace::open(a.into());
+            return Ok((Arc::new(LocalFiles), Workspace::open(a.into())));
         }
     }
-    match (&job.workspace_path, job.task_id) {
-        (Some(p), _) => Workspace::open(p.into()),
-        (None, Some(t)) => Workspace::open(Workspace::task_path_for(
-            &state.config.scratch_root(),
-            &job.user_name,
-            t,
-        )),
-        (None, None) => Workspace::open(Workspace::path_for(
-            &state.config.scratch_root(),
-            &job.user_name,
-            job.id,
-        )),
+    let node = state
+        .node(job.node_id.as_deref().or(job.requested_node.as_deref()))
+        .map_err(ApiError::Internal)?;
+    let root = match (&job.workspace_path, job.task_id) {
+        (Some(p), _) => std::path::PathBuf::from(p),
+        (None, Some(t)) => Workspace::task_path_for(&node.scratch_root(), &job.user_name, t),
+        (None, None) => Workspace::path_for(&node.scratch_root(), &job.user_name, job.id),
+    };
+    Ok((node.files.clone(), Workspace::open(root)))
+}
+
+/// Node that receives files for a job that has not started yet; pins the job to it.
+async fn staging_node(state: &AppState, job: &Job) -> Result<Arc<Node>, ApiError> {
+    let node = state
+        .node(job.requested_node.as_deref())
+        .map_err(ApiError::Internal)?;
+    if job.requested_node.as_deref() != Some(&node.id) {
+        state.store.set_requested_node(job.id, &node.id).await?;
     }
+    Ok(node)
 }
 
 pub async fn log(
@@ -396,8 +436,8 @@ pub async fn log(
     Query(q): Query<LogQuery>,
 ) -> ApiResult<LogChunk> {
     let job = load_job(&state, &user, id).await?;
-    let ws = workspace_of(&state, &job);
-    let (content, next) = read_log(&ws.log_for(&job), q.tail, q.offset)?;
+    let (files, ws) = files_of(&state, &job)?;
+    let (content, next) = files.read_log(&ws.log_for(&job), q.tail, q.offset).await?;
     Ok(Json(LogChunk {
         job_id: id,
         content,
@@ -449,7 +489,8 @@ pub async fn artifacts(
     Path(id): Path<JobId>,
 ) -> ApiResult<Vec<ArtifactEntry>> {
     let job = load_job(&state, &user, id).await?;
-    Ok(Json(workspace_of(&state, &job).list_out()?))
+    let (files, ws) = files_of(&state, &job)?;
+    Ok(Json(files.list_out(&ws.root).await?))
 }
 
 pub async fn result(
@@ -458,9 +499,9 @@ pub async fn result(
     Path(id): Path<JobId>,
 ) -> ApiResult<JobResult> {
     let job = load_job(&state, &user, id).await?;
-    let ws = workspace_of(&state, &job);
-    let artifacts = ws.list_out()?;
-    let (log_tail, _) = read_log(&ws.log_for(&job), Some(100), None)?;
+    let (files, ws) = files_of(&state, &job)?;
+    let artifacts = files.list_out(&ws.root).await?;
+    let (log_tail, _) = files.read_log(&ws.log_for(&job), Some(100), None).await?;
     Ok(Json(JobResult {
         job,
         artifacts,
@@ -474,25 +515,19 @@ pub async fn artifact(
     Path((id, path)): Path<(JobId, String)>,
 ) -> Result<Response, ApiError> {
     let job = load_job(&state, &user, id).await?;
-    let ws = workspace_of(&state, &job);
+    let (files, ws) = files_of(&state, &job)?;
     let file = ws
         .resolve_in(&ws.out(), &path)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    let md = tokio::fs::metadata(&file)
+    let (len, stream) = files
+        .open_file(&file)
         .await
         .map_err(|_| ApiError::NotFound(format!("artifact {path}")))?;
-    if !md.is_file() {
-        return Err(ApiError::BadRequest("not a file".into()));
-    }
-    let f = tokio::fs::File::open(&file)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    let stream = tokio_util::io::ReaderStream::new(f);
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     Ok((
         [
             (header::CONTENT_TYPE, mime.as_ref().to_string()),
-            (header::CONTENT_LENGTH, md.len().to_string()),
+            (header::CONTENT_LENGTH, len.to_string()),
         ],
         Body::from_stream(stream),
     )
@@ -513,23 +548,24 @@ pub async fn upload_files(
             job.state
         )));
     }
-    let ws = match job.task_id {
+    let (files, root) = match job.task_id {
         Some(tid) => {
             let t = state
                 .store
                 .task(tid)
                 .await?
                 .ok_or_else(|| ApiError::NotFound(format!("task {tid}")))?;
-            crate::tasks::ensure_workspace(&state, &t).await?
+            let ws = crate::tasks::ensure_workspace(&state, &t).await?;
+            let t = state.store.task(tid).await?.unwrap();
+            (state.node_for_task(&t)?.files.clone(), ws.root)
         }
-        None => Workspace::create(Workspace::path_for(
-            &state.config.scratch_root(),
-            &job.user_name,
-            job.id,
-        ))?,
+        None => {
+            let node = staging_node(&state, &job).await?;
+            let root = Workspace::path_for(&node.scratch_root(), &job.user_name, job.id);
+            node.files.ensure_workspace(&root).await?;
+            (node.files.clone(), root)
+        }
     };
-    let n = tokio::task::spawn_blocking(move || ws.unpack_tar_gz(&body))
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))??;
+    let n = files.unpack_tar_gz(&root, body).await?;
     Ok(Json(serde_json::json!({ "job_id": id, "files": n })))
 }

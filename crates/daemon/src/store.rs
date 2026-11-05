@@ -49,6 +49,7 @@ struct JobRow {
     task_id: Option<i64>,
     base_snapshot_id: Option<i64>,
     snapshot_id: Option<i64>,
+    requested_node: Option<String>,
 }
 
 impl From<JobRow> for Job {
@@ -85,6 +86,7 @@ impl From<JobRow> for Job {
             task_id: r.task_id,
             base_snapshot_id: r.base_snapshot_id,
             snapshot_id: r.snapshot_id,
+            requested_node: r.requested_node,
         }
     }
 }
@@ -125,6 +127,7 @@ pub struct NewJob {
     pub array_index: Option<u32>,
     pub time_limit_secs: Option<u64>,
     pub task_id: Option<i64>,
+    pub requested_node: Option<String>,
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -393,8 +396,8 @@ impl Store {
     pub async fn create_job(&self, j: &NewJob) -> anyhow::Result<Job> {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO jobs (user_id, name, image, command, env, cpus, mem_bytes, gpus, state, priority, depends_on,
-             array_index, time_limit_secs, submitted_at, gpu_ids, task_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?) RETURNING id",
+             array_index, time_limit_secs, submitted_at, gpu_ids, task_id, requested_node)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?) RETURNING id",
         )
         .bind(j.user_id)
         .bind(&j.name)
@@ -411,6 +414,7 @@ impl Store {
         .bind(j.time_limit_secs.map(|v| v as i64))
         .bind(Utc::now())
         .bind(j.task_id)
+        .bind(&j.requested_node)
         .fetch_one(&self.pool)
         .await?;
         self.job(id).await?.context("job vanished after insert")
@@ -576,6 +580,15 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_requested_node(&self, id: JobId, node: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE jobs SET requested_node = ? WHERE id = ?")
+            .bind(node)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_reason(&self, id: JobId, reason: Option<&str>) -> anyhow::Result<()> {
         sqlx::query("UPDATE jobs SET reason = ? WHERE id = ?")
             .bind(reason)
@@ -674,6 +687,7 @@ struct TaskRow {
     keep_warm_secs: i64,
     state: String,
     head_snapshot_id: Option<i64>,
+    node_id: Option<String>,
     workspace_path: Option<String>,
     archive_path: Option<String>,
     warm_container: Option<String>,
@@ -700,6 +714,7 @@ impl From<TaskRow> for Task {
             keep_warm_secs: r.keep_warm_secs.max(0) as u64,
             state: TaskState::parse(&r.state).unwrap_or(TaskState::Closed),
             head_snapshot_id: r.head_snapshot_id,
+            node_id: r.node_id,
             workspace_path: r.workspace_path,
             archive_path: r.archive_path,
             warm_container: r.warm_container,
@@ -763,11 +778,12 @@ impl Store {
         base_image: &str,
         res: &ResourceRequest,
         keep_warm_secs: u64,
+        node_id: Option<&str>,
     ) -> anyhow::Result<Task> {
         let now = Utc::now();
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO tasks (user_id, name, base_image, cpus, mem_bytes, gpus, keep_warm_secs, state, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING id",
+            "INSERT INTO tasks (user_id, name, base_image, cpus, mem_bytes, gpus, keep_warm_secs, state, created_at, updated_at, node_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
@@ -778,6 +794,7 @@ impl Store {
         .bind(keep_warm_secs as i64)
         .bind(now)
         .bind(now)
+        .bind(node_id)
         .fetch_one(&self.pool)
         .await?;
         self.task(id).await?.context("task vanished after insert")
@@ -876,6 +893,15 @@ impl Store {
             .bind(st.as_str())
             .bind(closed)
             .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_task_node(&self, id: TaskId, node: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET node_id = ? WHERE id = ?")
+            .bind(node)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -1050,5 +1076,44 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- nodes
+
+impl Store {
+    pub async fn upsert_node(&self, reg: &mlq_core::api::NodeRegistration) -> anyhow::Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO nodes (id, url, hostname, info, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET url = excluded.url, hostname = excluded.hostname, info = excluded.info, last_seen = excluded.last_seen",
+        )
+        .bind(&reg.id)
+        .bind(&reg.url)
+        .bind(&reg.hostname)
+        .bind(serde_json::to_string(reg)?)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn known_nodes(&self) -> anyhow::Result<Vec<mlq_core::api::NodeRegistration>> {
+        let rows = sqlx::query("SELECT info FROM nodes ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| serde_json::from_str(&r.get::<String, _>("info")).ok())
+            .collect())
+    }
+
+    pub async fn delete_node(&self, id: &str) -> anyhow::Result<bool> {
+        let r = sqlx::query("DELETE FROM nodes WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
     }
 }

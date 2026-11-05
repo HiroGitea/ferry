@@ -35,6 +35,8 @@ pub struct Config {
     pub container: ContainerConfig,
     pub retention: RetentionConfig,
     pub archive: ArchiveConfig,
+    pub cluster: ClusterConfig,
+    pub agent: AgentConfig,
     pub fair_share: FairShareConfig,
     pub metrics: crate::metrics::MetricsConfig,
     pub log_level: String,
@@ -61,10 +63,63 @@ pub struct ContainerConfig {
     pub pids_limit: u32,
     /// Shared memory size for the container (PyTorch DataLoader needs more than the 64M default).
     pub shm_size: String,
-    /// "cdi" => `--device nvidia.com/gpu=N` (podman); "docker" => `--gpus device=N`.
+    /// "cdi" => `--device nvidia.com/gpu=N` (podman); "docker" => `--gpus device=N`;
+    /// "none" => no device flags (fake GPUs, testing).
     pub gpu_flag_style: String,
     /// Extra arguments appended to every `run` invocation.
     pub extra_args: Vec<String>,
+}
+
+/// Multi-node: this daemon as the control node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClusterConfig {
+    /// Name of this machine as a node (jobs show it as `node_id`).
+    pub node_name: String,
+    /// Run jobs on this machine too. `false` makes a pure control node (API, scheduler, NAS).
+    pub local_node: bool,
+    /// Shared secret agents present when registering. Empty = agents are not accepted.
+    pub node_token: String,
+    /// An agent that has not reported for this long is marked offline.
+    pub node_timeout_secs: u64,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            node_name: "local".into(),
+            local_node: true,
+            node_token: String::new(),
+            node_timeout_secs: 30,
+        }
+    }
+}
+
+/// `mlqd --agent`: this machine runs jobs for a control node elsewhere.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentConfig {
+    /// URL of the control daemon, e.g. "http://control.tailnet:7070".
+    pub control_url: String,
+    /// Must equal `cluster.node_token` on the control node.
+    pub node_token: String,
+    /// Address the agent API listens on (reachable from the control node, e.g. the tailscale IP).
+    pub listen: String,
+    /// URL the control node should use to reach this agent (default: http://<first non-loopback IP>:<port>).
+    pub advertise_url: Option<String>,
+    pub heartbeat_secs: u64,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            control_url: String::new(),
+            node_token: String::new(),
+            listen: "0.0.0.0:7071".into(),
+            advertise_url: None,
+            heartbeat_secs: 10,
+        }
+    }
 }
 
 /// Self-contained `.7z` task archives written to `retention.archive_dir` (the NAS).
@@ -146,6 +201,8 @@ impl Default for Config {
             container: ContainerConfig::default(),
             retention: RetentionConfig::default(),
             archive: ArchiveConfig::default(),
+            cluster: ClusterConfig::default(),
+            agent: AgentConfig::default(),
             fair_share: FairShareConfig::default(),
             metrics: crate::metrics::MetricsConfig::default(),
             log_level: "info".into(),

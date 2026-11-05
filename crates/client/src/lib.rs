@@ -100,6 +100,13 @@ impl Client {
     pub async fn status(&self) -> Result<ClusterStatus, ClientError> {
         self.send(self.req(Method::GET, "/status")).await
     }
+    pub async fn nodes(&self) -> Result<Vec<mlq_core::api::NodeStatus>, ClientError> {
+        self.send(self.req(Method::GET, "/nodes")).await
+    }
+    pub async fn delete_node(&self, id: &str) -> Result<serde_json::Value, ClientError> {
+        self.send(self.req(Method::DELETE, &format!("/nodes/{id}")))
+            .await
+    }
     pub async fn gpus(&self) -> Result<Vec<GpuInfo>, ClientError> {
         self.send(self.req(Method::GET, "/gpus")).await
     }

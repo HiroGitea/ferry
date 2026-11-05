@@ -136,9 +136,16 @@ pub async fn create(
         ));
     }
     let keep = req.keep_warm_secs.unwrap_or(0).min(24 * 3600);
+    if let Some(n) = &req.node {
+        if state.nodes.get(n).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "node '{n}' is not registered"
+            )));
+        }
+    }
     let t = state
         .store
-        .create_task(user.0.id, name, &image, &res, keep)
+        .create_task(user.0.id, name, &image, &res, keep, req.node.as_deref())
         .await?;
     tasks::ensure_workspace(&state, &t).await?;
     let t = state.store.task(t.id).await?.unwrap();
@@ -365,7 +372,21 @@ pub async fn import(
     check_archive_access(&user, &req.name)?;
     let path = crate::archive::resolve(&state, &req.name)
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
-    let t = crate::archive::import_task(&state, user.0.id, &path, req.task_name.as_deref()).await?;
+    if let Some(n) = &req.node {
+        if state.nodes.get(n).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "node '{n}' is not registered"
+            )));
+        }
+    }
+    let t = crate::archive::import_task(
+        &state,
+        user.0.id,
+        &path,
+        req.task_name.as_deref(),
+        req.node.clone(),
+    )
+    .await?;
     publish_task(&state, t.id);
     Ok(Json(detail(&state, t).await?))
 }

@@ -277,20 +277,35 @@ async fn build(
     let steps = state.store.task_steps(task.id).await?;
     let snapshots: Vec<Snapshot> = state.store.snapshots(task.id).await?;
 
-    // Files from the SSD workspace.
-    for (sub, dst) in [("work", "work"), ("out", "out"), ("logs", "logs")] {
-        let src = ws.root.join(sub);
-        if src.exists() {
-            let (s, d) = (src.clone(), staging.join(dst));
-            tokio::task::spawn_blocking(move || copy_dir(&s, &d)).await??;
-        } else {
-            std::fs::create_dir_all(staging.join(dst))?;
-        }
+    // Files from the node's SSD workspace.
+    let node = state.node_for_task(task)?;
+    node.files
+        .copy_to_local(&ws.root, &["work", "out", "logs"], staging)
+        .await?;
+    for sub in ["work", "out", "logs"] {
+        std::fs::create_dir_all(staging.join(sub))?;
     }
+    // Images are saved on the node and fetched (the local node saves straight into staging).
+    let transfer = node.scratch_root().join(".transfer");
+    let save = |image: String, dest: PathBuf| {
+        let node = node.clone();
+        let transfer = transfer.clone();
+        async move {
+            if node.local {
+                node.executor.save_image(&image, &dest).await
+            } else {
+                let remote = transfer.join(dest.file_name().unwrap_or_default());
+                node.executor.save_image(&image, &remote).await?;
+                let r = node.files.fetch_file(&remote, &dest).await;
+                let _ = node.files.remove_file(&remote).await;
+                r
+            }
+        }
+    };
 
     // Snapshot images.
     let mut images = Vec::new();
-    if policy != ImagePolicy::None && state.executor.supports_snapshots() {
+    if policy != ImagePolicy::None && node.executor.supports_snapshots() {
         std::fs::create_dir_all(staging.join("env"))?;
         let head = task.head_snapshot_id;
         for s in snapshots.iter().filter(|s| !s.deleted) {
@@ -306,9 +321,7 @@ async fn build(
             }
             let file = format!("snap-{}.oci.tar", s.id);
             let path = staging.join("env").join(&file);
-            state
-                .executor
-                .save_image(&s.image, &path)
+            save(s.image.clone(), path.clone())
                 .await
                 .with_context(|| format!("saving {}", s.image))?;
             let bytes = std::fs::metadata(&path)?.len();
@@ -324,12 +337,7 @@ async fn build(
             // HEAD is the base image: include it so the archive restores without registry access.
             let file = "base.oci.tar".to_string();
             let path = staging.join("env").join(&file);
-            if state
-                .executor
-                .save_image(&task.base_image, &path)
-                .await
-                .is_ok()
-            {
+            if save(task.base_image.clone(), path.clone()).await.is_ok() {
                 let bytes = std::fs::metadata(&path)?.len();
                 images.push(ArchiveImage {
                     snapshot_id: None,
@@ -511,6 +519,7 @@ pub async fn import_task(
     user_id: i64,
     path: &Path,
     task_name: Option<&str>,
+    node: Option<String>,
 ) -> anyhow::Result<Task> {
     let m = read_manifest(state, path).await?;
     let name = task_name
@@ -524,9 +533,11 @@ pub async fn import_task(
             &m.task.base_image,
             &m.task.resources,
             m.task.keep_warm_secs,
+            node.as_deref(),
         )
         .await?;
     let ws = crate::tasks::ensure_workspace(state, &task).await?;
+    let task = state.store.task(task.id).await?.context("task vanished")?;
     let staging = state.config.data_dir.join("export").join(format!(
         "import-{}-{}",
         task.id,
@@ -575,12 +586,38 @@ async fn restore(
         })
         .await??;
     }
-    for sub in ["work", "out", "logs"] {
-        let src = staging.join(sub);
-        if src.exists() {
-            let (s, d) = (src, ws.root.join(sub));
-            tokio::task::spawn_blocking(move || copy_dir(&s, &d)).await??;
+    let node = state.node_for_task(task)?;
+    // Restore work/out/logs onto the task's node.
+    if node.local {
+        for sub in ["work", "out", "logs"] {
+            let src = staging.join(sub);
+            if src.exists() {
+                let (s, d) = (src, ws.root.join(sub));
+                tokio::task::spawn_blocking(move || copy_dir(&s, &d)).await??;
+            }
         }
+    } else {
+        // One tar with work/, out/ and logs/ at its root, pushed and unpacked on the node.
+        let tar_path = staging.join("restore.tar");
+        let (st, tp) = (staging.to_path_buf(), tar_path.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let mut ar = tar::Builder::new(std::fs::File::create(&tp)?);
+            for sub in ["work", "out", "logs"] {
+                if st.join(sub).is_dir() {
+                    ar.append_dir_all(sub, st.join(sub))?;
+                }
+            }
+            ar.finish()?;
+            Ok(())
+        })
+        .await??;
+        let remote = node
+            .scratch_root()
+            .join(".transfer")
+            .join(format!("restore-{}.tar", task.id));
+        node.files.push_file(&tar_path, &remote).await?;
+        node.files.unpack_tar_at(&remote, &ws.root).await?;
+        let _ = node.files.remove_file(&remote).await;
     }
     std::fs::copy(
         staging.join("manifest.json"),
@@ -589,13 +626,27 @@ async fn restore(
     .ok();
     // HEAD image → snapshot 1 of the new task.
     if let Some(img) = m.images.iter().find(|i| i.is_head) {
-        if state.executor.supports_snapshots() {
-            let loaded = state.executor.load_image(&staging.join(&img.file)).await?;
+        if node.executor.supports_snapshots() {
+            let local_tar = staging.join(&img.file);
+            let node_tar = if node.local {
+                local_tar.clone()
+            } else {
+                let p = node
+                    .scratch_root()
+                    .join(".transfer")
+                    .join(format!("import-{}.oci.tar", task.id));
+                node.files.push_file(&local_tar, &p).await?;
+                p
+            };
+            let loaded = node.executor.load_image(&node_tar).await?;
+            if !node.local {
+                let _ = node.files.remove_file(&node_tar).await;
+            }
             let src = loaded.first().cloned().unwrap_or_else(|| img.image.clone());
             let tag = crate::tasks::snapshot_image(task.id, 1);
-            state.executor.tag_image(&src, &tag).await?;
+            node.executor.tag_image(&src, &tag).await?;
             if src != tag && src.starts_with("localhost/mlq-task-") {
-                let _ = state.executor.remove_image(&src).await;
+                let _ = node.executor.remove_image(&src).await;
             }
             let snap = state
                 .store
@@ -624,14 +675,15 @@ pub async fn offload(state: &AppState, task: &Task, archive_path: &str) -> anyho
     if task.state != TaskState::Closed {
         bail!("only closed tasks can be offloaded");
     }
+    let node = state.node_for_task(task)?;
     for s in state.store.snapshots(task.id).await? {
         if !s.deleted {
-            let _ = state.executor.remove_image(&s.image).await;
+            let _ = node.executor.remove_image(&s.image).await;
             state.store.mark_snapshot_deleted(s.id).await?;
         }
     }
     if let Some(p) = &task.workspace_path {
-        let _ = std::fs::remove_dir_all(p);
+        let _ = node.files.remove_dir(Path::new(p)).await;
     }
     if let Some(root) = &state.config.retention.archive_dir {
         let mirror = crate::tasks::archive_dir_for(root, task);

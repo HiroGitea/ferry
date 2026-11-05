@@ -64,6 +64,7 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
                 <Th>ID</Th>
                 <Th>Name</Th>
                 <Th>Task</Th>
+                <Th>Node</Th>
                 <Th>User</Th>
                 <Th>State</Th>
                 <Th>Resources</Th>
@@ -93,6 +94,7 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
                         <span className="text-xs text-muted-fg">–</span>
                       )}
                     </Td>
+                    <Td className="text-xs text-muted-fg">{j.node_id ?? (j.requested_node ? `→ ${j.requested_node}` : "")}</Td>
                     <Td>{j.user_name}</Td>
                     <Td>
                       <StateBadge state={j.state} />
@@ -170,6 +172,7 @@ export function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) 
             <Field k="state" v={<StateBadge state={j.state} />} />
             <Field k="exit code" v={j.exit_code ?? "–"} />
             <Field k="GPUs" v={j.gpu_ids.join(", ") || "–"} />
+            <Field k="node" v={j.node_id ?? j.requested_node ?? "any"} />
             <Field k="resources" v={`${j.resources.cpus} cpu · ${fmtBytes(j.resources.mem_bytes)} · ${j.resources.gpus} gpu`} />
             <Field k="submitted" v={fmtTime(j.submitted_at)} />
             <Field k="started" v={fmtTime(j.started_at) || "–"} />

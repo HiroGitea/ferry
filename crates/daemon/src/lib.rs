@@ -1,5 +1,6 @@
 //! mlqd: single-node container job scheduler daemon.
 
+pub mod agent;
 pub mod api;
 pub mod archive;
 pub mod auth;
@@ -8,6 +9,8 @@ pub mod events;
 pub mod executor;
 pub mod gpu;
 pub mod metrics;
+pub mod node;
+pub mod remote;
 pub mod retention;
 pub mod sched;
 pub mod state;
@@ -41,10 +44,22 @@ pub async fn build_state(config: Config) -> anyhow::Result<Arc<AppState>> {
     std::fs::create_dir_all(config.scratch_root())?;
     let store = store::Store::open(&config.db_path()).await?;
     store.bootstrap_admin(&config.data_dir).await?;
-    let executor = executor::from_config(&config)?;
-    let gpu = gpu::from_config(&config);
+    let nodes = node::Nodes::default();
+    if config.cluster.local_node {
+        let executor = executor::from_config(&config)?;
+        let gpu = gpu::from_config(&config);
+        nodes.insert(node::local_node(&config, executor, gpu));
+    }
+    // Agents that registered before: listed as offline until they report again.
+    for reg in store.known_nodes().await? {
+        if nodes.get(&reg.id).is_none() {
+            if let Ok(n) = api::nodes::node_from_registration(&config, &reg, false) {
+                nodes.insert(n);
+            }
+        }
+    }
     let metrics = metrics::MetricsHub::open(&config).await?;
-    Ok(AppState::new(config, store, executor, gpu, metrics))
+    Ok(AppState::new(config, store, nodes, metrics))
 }
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
@@ -55,6 +70,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     sched::spawn(state.clone());
     retention::spawn(state.clone());
+    api::nodes::spawn_liveness(state.clone());
     tasks::spawn_warm_reaper(state.clone());
     metrics::collector::spawn(state.clone());
 
@@ -70,7 +86,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+pub async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };

@@ -63,7 +63,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     { to: "/tasks", label: "Tasks", icon: Boxes },
     { to: "/jobs", label: "Jobs", icon: ListTodo },
     { to: "/usage", label: "Usage", icon: BarChart3 },
-    { to: "/gpus", label: "GPUs", icon: Cpu },
+    { to: "/gpus", label: "Nodes & GPUs", icon: Cpu },
     ...(isAdmin ? [{ to: "/users", label: "Users", icon: UsersIcon }] : []),
   ];
   const s = status.data;
@@ -92,7 +92,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           </div>
           {s && (
             <div>
-              {s.node.hostname} · v{s.version}
+              {s.nodes.length > 1 ? `${s.nodes.filter((n) => n.online).length}/${s.nodes.length} nodes` : s.node.hostname} · v{s.version}
             </div>
           )}
         </div>
@@ -110,7 +110,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             {s && (
               <>
                 <span>
-                  <b className="text-fg tabular-nums">{s.free_gpus.length}</b>/{s.node.gpus_managed.length} GPUs free
+                  <b className="text-fg tabular-nums">{s.free_gpu_count}</b>/{s.managed_gpu_count} GPUs free
                 </span>
                 <span>
                   <b className="text-fg tabular-nums">{s.running_jobs}</b> running

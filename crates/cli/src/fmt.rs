@@ -13,6 +13,8 @@ struct JobRow {
     id: i64,
     #[tabled(rename = "NAME")]
     name: String,
+    #[tabled(rename = "NODE")]
+    node: String,
     #[tabled(rename = "USER")]
     user: String,
     #[tabled(rename = "STATE")]
@@ -38,6 +40,11 @@ pub fn print_jobs(jobs: &[Job]) {
         .map(|j| JobRow {
             id: j.id,
             name: truncate(&j.name, 28),
+            node: j
+                .node_id
+                .clone()
+                .or_else(|| j.requested_node.clone().map(|n| format!("→{n}")))
+                .unwrap_or_default(),
             user: j.user_name.clone(),
             state: j.state.to_string(),
             res: format!(
@@ -69,6 +76,30 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 pub fn print_status(s: &ClusterStatus) {
+    if s.nodes.len() > 1 {
+        println!(
+            "mlqd {}  {} nodes ({} online)",
+            s.version,
+            s.nodes.len(),
+            s.nodes.iter().filter(|n| n.online).count()
+        );
+        println!(
+            "free      {:.1} cpus, {} memory, {} of {} gpus    jobs {} running, {} queued",
+            s.free_cpus,
+            format_bytes(s.free_mem),
+            s.free_gpu_count,
+            s.managed_gpu_count,
+            s.running_jobs,
+            s.queued_jobs
+        );
+        println!();
+        print_nodes(&s.nodes);
+        if !s.gpus.is_empty() {
+            println!();
+            print_gpus(&s.gpus);
+        }
+        return;
+    }
     println!(
         "node      {} ({})  mlqd {}  runtime {}",
         s.node.hostname, s.node.id, s.version, s.node.runtime
@@ -101,7 +132,62 @@ pub fn print_status(s: &ClusterStatus) {
 }
 
 #[derive(Tabled)]
+struct NodeRow {
+    #[tabled(rename = "NODE")]
+    id: String,
+    #[tabled(rename = "STATE")]
+    state: String,
+    #[tabled(rename = "HOST")]
+    host: String,
+    #[tabled(rename = "RUNTIME")]
+    runtime: String,
+    #[tabled(rename = "CPUS FREE")]
+    cpus: String,
+    #[tabled(rename = "MEM FREE")]
+    mem: String,
+    #[tabled(rename = "GPUS FREE")]
+    gpus: String,
+    #[tabled(rename = "JOBS")]
+    jobs: u32,
+    #[tabled(rename = "MOUNTS")]
+    mounts: String,
+}
+
+pub fn print_nodes(nodes: &[mlq_core::api::NodeStatus]) {
+    let rows: Vec<NodeRow> = nodes
+        .iter()
+        .map(|n| NodeRow {
+            id: format!("{}{}", n.info.id, if n.local { " (this)" } else { "" }),
+            state: if n.online {
+                "online".into()
+            } else {
+                format!("offline since {}", n.last_seen.format("%H:%M"))
+            },
+            host: n.url.clone().unwrap_or_else(|| n.info.hostname.clone()),
+            runtime: n.info.runtime.clone(),
+            cpus: format!("{:.1}/{}", n.free_cpus, n.info.cpus_managed),
+            mem: format!(
+                "{}/{}",
+                format_bytes(n.free_mem),
+                format_bytes(n.info.mem_managed)
+            ),
+            gpus: format!(
+                "{}/{} {:?}",
+                n.free_gpus.len(),
+                n.info.gpus_managed.len(),
+                n.free_gpus
+            ),
+            jobs: n.running_jobs,
+            mounts: n.mounts.join(","),
+        })
+        .collect();
+    println!("{}", Table::new(rows).with(Style::blank()));
+}
+
+#[derive(Tabled)]
 struct GpuRow {
+    #[tabled(rename = "NODE")]
+    node: String,
     #[tabled(rename = "GPU")]
     index: u32,
     #[tabled(rename = "NAME")]
@@ -126,6 +212,7 @@ pub fn print_gpus(gpus: &[GpuInfo]) {
     let rows: Vec<GpuRow> = gpus
         .iter()
         .map(|g| GpuRow {
+            node: g.node_id.clone(),
             index: g.index,
             name: g.name.clone(),
             mem: format!("{}/{}", format_bytes(g.mem_used), format_bytes(g.mem_total)),

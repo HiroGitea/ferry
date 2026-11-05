@@ -136,6 +136,8 @@ impl ContainerExecutor {
         }
         if !c.gpu_ids.is_empty() {
             match self.gpu_style() {
+                // "none": no device flags (fake GPUs / testing without the NVIDIA toolkit)
+                "none" => {}
                 "docker" => {
                     a.push("--gpus".into());
                     a.push(format!(
@@ -623,6 +625,7 @@ mod tests {
             task_id: None,
             base_snapshot_id: None,
             snapshot_id: None,
+            requested_node: None,
         };
         let spec = RunSpec {
             job,

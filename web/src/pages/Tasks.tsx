@@ -118,6 +118,9 @@ function CreateTask({ onDone }: { onDone: () => void }) {
   const [mem, setMem] = useState("8G");
   const [gpus, setGpus] = useState("0");
   const [warm, setWarm] = useState("10");
+  const [node, setNode] = useState("");
+  const nodesQ = useQuery({ queryKey: ["nodes"], queryFn: api.nodes });
+  const nodes = nodesQ.data ?? [];
   const m = useMutation({
     mutationFn: () =>
       api.createTask({
@@ -125,6 +128,7 @@ function CreateTask({ onDone }: { onDone: () => void }) {
         image: image.trim() || undefined,
         resources: { cpus: Number(cpus), mem_bytes: parseBytes(mem), gpus: Number(gpus) },
         keep_warm_secs: Math.round(Number(warm) * 60),
+        node: node || undefined,
       }),
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
@@ -165,6 +169,19 @@ function CreateTask({ onDone }: { onDone: () => void }) {
           Keep warm (minutes, 0 = off)
           <Input className="w-full" value={warm} onChange={(e) => setWarm(e.target.value)} />
         </label>
+        {nodes.length > 1 && (
+          <label className="space-y-1 text-xs text-muted-fg">
+            Node
+            <select className="h-8 w-full rounded-md border border-border bg-bg px-2 text-sm" value={node} onChange={(e) => setNode(e.target.value)}>
+              <option value="">node of the first step</option>
+              {nodes.map((n) => (
+                <option key={n.info.id} value={n.info.id} disabled={!n.online || !n.supports_snapshots}>
+                  {n.info.id} ({n.info.gpus_managed.length} GPUs{n.supports_snapshots ? "" : ", no snapshots"})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="flex items-center gap-2 sm:col-span-2 lg:col-span-4">
           <Button type="submit" variant="primary" disabled={!name.trim() || m.isPending}>
             Create

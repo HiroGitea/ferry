@@ -7,14 +7,12 @@ use std::time::Duration;
 use chrono::Utc;
 use mlq_core::api::Event;
 use mlq_core::scheduler::{Decision, SchedulerInput, schedule};
-use mlq_core::{Inventory, Job, JobId, JobState, UserId};
+use mlq_core::{Job, JobId, JobState, UserId};
 use tracing::{error, info, warn};
 
 use crate::executor::RunSpec;
 use crate::state::AppState;
 use crate::workspace::Workspace;
-
-pub const NODE_ID: &str = "local";
 
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
@@ -52,34 +50,6 @@ pub fn host_resources() -> (f64, u64) {
     (cpus, mem)
 }
 
-/// The managed inventory: host resources minus reservations, GPUs filtered by `managed_gpus`.
-pub fn inventory(state: &AppState) -> Inventory {
-    let cfg = &state.config;
-    let (host_cpus, host_mem) = host_resources();
-    let cpus = cfg
-        .max_cpus
-        .unwrap_or((host_cpus - cfg.reserve_cpus).max(0.0));
-    let mem = cfg
-        .max_mem
-        .as_deref()
-        .and_then(|m| mlq_core::parse_bytes(m).ok())
-        .unwrap_or(host_mem.saturating_sub(cfg.reserve_mem_bytes()));
-    let detected: Vec<u32> = state.gpu.list().into_iter().map(|g| g.index).collect();
-    let gpus = match &cfg.managed_gpus {
-        Some(list) => list
-            .iter()
-            .copied()
-            .filter(|g| detected.contains(g))
-            .collect(),
-        None => detected,
-    };
-    Inventory {
-        cpus,
-        mem_bytes: mem,
-        gpus,
-    }
-}
-
 /// Decayed GPU-seconds per user for fair-share ordering.
 pub async fn fair_usage(state: &AppState, active: &[Job]) -> anyhow::Result<HashMap<UserId, f64>> {
     let mut usage: HashMap<UserId, f64> = HashMap::new();
@@ -107,8 +77,15 @@ async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
         if !job.state.is_active() || job.task_id.is_some() {
             continue;
         }
+        let Ok(node) = state.node_for_job(&job) else {
+            continue;
+        };
+        let alive = match &job.container_id {
+            Some(h) => node.executor.is_alive(h).await.unwrap_or(false),
+            None => false,
+        };
         match &job.container_id {
-            Some(h) if state.executor.is_alive(h).await.unwrap_or(false) => {
+            Some(_) if alive => {
                 info!(job = job.id, "re-attaching to running job");
                 let st = state.clone();
                 tokio::spawn(async move {
@@ -152,7 +129,7 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
         .collect();
     jobs.extend(state.store.jobs_by_ids(&dep_ids).await?);
 
-    let inv = inventory(state);
+    let node_invs = state.nodes.inventories();
     let quotas = state.store.all_quotas().await?;
     let fair = fair_usage(state, &active).await?;
     let now = Utc::now();
@@ -164,12 +141,25 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
         .filter(|t| t.warm_until.map(|u| u > now).unwrap_or(false) && !t.warm_gpus.is_empty())
         .map(|t| (t.id, t.warm_gpus))
         .collect();
+    let mut task_nodes: HashMap<i64, String> = HashMap::new();
+    for tid in active
+        .iter()
+        .filter_map(|j| j.task_id)
+        .collect::<std::collections::HashSet<_>>()
+    {
+        if let Ok(Some(t)) = state.store.task(tid).await {
+            if let Some(n) = t.node_id {
+                task_nodes.insert(tid, n);
+            }
+        }
+    }
     let decisions = schedule(SchedulerInput {
-        inventory: &inv,
+        nodes: &node_invs,
         jobs: &jobs,
         quotas: &quotas,
         fair_usage: &fair,
         gpu_affinity: &affinity,
+        task_nodes: &task_nodes,
     });
 
     for d in decisions {
@@ -178,7 +168,7 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
                 let Some(job) = jobs.iter().find(|j| j.id == a.job_id).cloned() else {
                     continue;
                 };
-                launch(state.clone(), job, a.gpu_ids).await;
+                launch(state.clone(), job, a.node_id, a.gpu_ids).await;
             }
             Decision::Reject { job_id, reason } => {
                 warn!(job = job_id, %reason, "rejecting job");
@@ -207,13 +197,18 @@ pub async fn publish_job(state: &AppState, id: JobId) {
 }
 
 /// Prepare the workspace, pull the image if needed, start the container and watch it.
-async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
+async fn launch(state: Arc<AppState>, mut job: Job, node_id: String, gpu_ids: Vec<u32>) {
+    let Ok(node) = state.node(Some(&node_id)) else {
+        error!(job = job.id, node = %node_id, "node vanished");
+        return;
+    };
+    job.node_id = Some(node.id.clone());
     if let Some(tid) = job.task_id {
         // Claim the resources now; the task module prepares/reuses the environment.
-        let ws_path = Workspace::task_path_for(&state.config.scratch_root(), &job.user_name, tid);
+        let ws_path = Workspace::task_path_for(&node.scratch_root(), &job.user_name, tid);
         if let Err(e) = state
             .store
-            .set_assigned(job.id, &gpu_ids, NODE_ID, &ws_path.to_string_lossy())
+            .set_assigned(job.id, &gpu_ids, &node.id, &ws_path.to_string_lossy())
             .await
         {
             error!(job = job.id, "db: {e:#}");
@@ -223,8 +218,13 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
         tokio::spawn(crate::tasks::run_step(state, job, gpu_ids));
         return;
     }
-    let ws_path = Workspace::path_for(&state.config.scratch_root(), &job.user_name, job.id);
-    let ws = match Workspace::create(ws_path.clone()) {
+    let ws_path = Workspace::path_for(&node.scratch_root(), &job.user_name, job.id);
+    let ws = match node
+        .files
+        .ensure_workspace(&ws_path)
+        .await
+        .map(|_| Workspace::open(ws_path.clone()))
+    {
         Ok(ws) => ws,
         Err(e) => {
             let _ = state
@@ -244,7 +244,7 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
     // Claim the resources immediately so the next tick sees them as taken.
     if let Err(e) = state
         .store
-        .set_assigned(job.id, &gpu_ids, NODE_ID, &ws_str)
+        .set_assigned(job.id, &gpu_ids, &node.id, &ws_str)
         .await
     {
         error!(job = job.id, "db: {e:#}");
@@ -255,7 +255,7 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
     tokio::spawn(async move {
         let token = state.cancel_token(job.id);
         // Image pull.
-        let present = state
+        let present = node
             .executor
             .image_present(&job.image)
             .await
@@ -267,7 +267,7 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
                 .set_state(job.id, JobState::Pulling, Some("pulling image"))
                 .await;
             publish_job(&state, job.id).await;
-            let pull = state.executor.pull_image(&job.image);
+            let pull = node.executor.pull_image(&job.image);
             tokio::select! {
                 r = pull => {
                     if let Err(e) = r {
@@ -312,11 +312,11 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
             job: job.clone(),
             workspace: ws.clone(),
             gpu_ids: gpu_ids.clone(),
-            mounts: state.config.mounts.clone(),
+            mounts: node.mounts(),
             env,
             log_path: ws.log(),
         };
-        let handle = match state.executor.start(&spec).await {
+        let handle = match node.executor.start(&spec).await {
             Ok(h) => h,
             Err(e) => {
                 error!(job = job.id, "start failed: {e:#}");
@@ -338,7 +338,7 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
         let _ = state.store.set_container(job.id, &handle).await;
         let _ = state
             .store
-            .set_started(job.id, &gpu_ids, NODE_ID, &ws_str)
+            .set_started(job.id, &gpu_ids, &node.id, &ws_str)
             .await;
         info!(job = job.id, user = %job.user_name, gpus = ?gpu_ids, "job started");
         publish_job(&state, job.id).await;
@@ -369,7 +369,10 @@ pub(crate) async fn wait_job(
             .unwrap_or(0);
         Duration::from_secs(s.saturating_sub(elapsed).max(1))
     });
-    let wait = state.executor.wait(&handle);
+    let Ok(node) = state.node_for_job(job) else {
+        return Outcome::Error("node not found".into());
+    };
+    let wait = node.executor.wait(&handle);
     tokio::pin!(wait);
     let timeout = async {
         match limit {
@@ -383,12 +386,12 @@ pub(crate) async fn wait_job(
             Err(e) => Outcome::Error(e.to_string()),
         },
         _ = token.cancelled() => {
-            let _ = state.executor.kill(&handle).await;
+            let _ = node.executor.kill(&handle).await;
             let _ = wait.await;
             Outcome::Cancelled
         }
         _ = timeout => {
-            let _ = state.executor.kill(&handle).await;
+            let _ = node.executor.kill(&handle).await;
             let _ = wait.await;
             Outcome::Timeout
         }
@@ -437,7 +440,11 @@ pub(crate) async fn finish_job(
 
 async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcome) {
     let (st, code, reason) = outcome_state(outcome);
-    let _ = state.executor.cleanup(&handle.to_string()).await;
+    if let Ok(Some(job)) = state.store.job(job_id).await {
+        if let Ok(node) = state.node_for_job(&job) {
+            let _ = node.executor.cleanup(&handle.to_string()).await;
+        }
+    }
     finish_job(state, job_id, st, code, reason.as_deref()).await;
     // Copy results to the archive (NAS) right away so the SSD copy is only a cache.
     if state.config.retention.archive_dir.is_some() {
