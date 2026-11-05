@@ -41,6 +41,8 @@ struct JobRow {
     container_id: Option<String>,
     workspace_path: Option<String>,
     reason: Option<String>,
+    archive_path: Option<String>,
+    workspace_deleted: i64,
 }
 
 impl From<JobRow> for Job {
@@ -72,6 +74,8 @@ impl From<JobRow> for Job {
             container_id: r.container_id,
             workspace_path: r.workspace_path,
             reason: r.reason,
+            archive_path: r.archive_path,
+            workspace_deleted: r.workspace_deleted != 0,
         }
     }
 }
@@ -500,9 +504,27 @@ impl Store {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    pub async fn mark_workspace_deleted(&self, id: JobId, archived: bool) -> anyhow::Result<()> {
-        sqlx::query("UPDATE jobs SET workspace_deleted = 1, archived = ? WHERE id = ?")
-            .bind(archived as i64)
+    pub async fn mark_archived(&self, id: JobId, path: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE jobs SET archived = 1, archive_path = ? WHERE id = ?")
+            .bind(path)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Finished jobs whose results have not been archived yet (only meaningful when an archive dir is configured).
+    pub async fn unarchived_finished_jobs(&self) -> anyhow::Result<Vec<Job>> {
+        let rows: Vec<JobRow> = sqlx::query_as(&format!(
+            "{JOB_SELECT} WHERE j.finished_at IS NOT NULL AND j.archived = 0 AND j.workspace_deleted = 0 AND j.workspace_path IS NOT NULL ORDER BY j.finished_at"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn mark_workspace_deleted(&self, id: JobId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE jobs SET workspace_deleted = 1 WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;

@@ -105,6 +105,12 @@ pub struct Job {
     pub workspace_path: Option<String>,
     /// Human readable reason for failure / cancellation / pending.
     pub reason: Option<String>,
+    /// Where `/out` and the log were copied after the job finished (e.g. on the NAS).
+    #[serde(default)]
+    pub archive_path: Option<String>,
+    /// The SSD workspace has been removed by the retention sweep.
+    #[serde(default)]
+    pub workspace_deleted: bool,
 }
 
 impl Job {

@@ -255,6 +255,18 @@ pub fn print_result(r: &JobResult) {
             .unwrap_or_default(),
         j.reason.clone().unwrap_or_default()
     );
+    if let Some(a) = &j.archive_path {
+        println!(
+            "archived to {a}{}",
+            if j.workspace_deleted {
+                " (SSD workspace removed)"
+            } else {
+                ""
+            }
+        );
+    } else if j.workspace_deleted {
+        println!("warning: SSD workspace was removed and no archive exists");
+    }
     if r.artifacts.is_empty() {
         println!("artifacts: none (write files to /out)");
     } else {

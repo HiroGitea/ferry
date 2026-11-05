@@ -318,6 +318,8 @@ mod tests {
             container_id: None,
             workspace_path: None,
             reason: None,
+            archive_path: None,
+            workspace_deleted: false,
         };
         let spec = RunSpec {
             job,

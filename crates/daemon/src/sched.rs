@@ -397,4 +397,19 @@ async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcom
     info!(job = job_id, state = %st, "job finished");
     publish_job(state, job_id).await;
     state.wake.notify_one();
+    // Copy results to the archive (NAS) right away so the SSD copy is only a cache.
+    if state.config.retention.archive_dir.is_some() {
+        if let Ok(Some(job)) = state.store.job(job_id).await {
+            match crate::retention::archive_job(state, &job).await {
+                Ok(p) => {
+                    info!(job = job_id, path = %p.display(), "results archived");
+                    publish_job(state, job_id).await;
+                }
+                Err(e) => warn!(
+                    job = job_id,
+                    "archive failed (will retry in retention sweep): {e:#}"
+                ),
+            }
+        }
+    }
 }

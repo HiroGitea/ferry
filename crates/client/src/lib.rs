@@ -168,6 +168,14 @@ impl Client {
         path: &str,
         max_bytes: Option<u64>,
     ) -> Result<bytes::Bytes, ClientError> {
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.split('/').any(|s| s == ".." || s == ".")
+        {
+            return Err(ClientError::Other(anyhow::anyhow!(
+                "invalid artifact path '{path}': must be relative to /out without '..'"
+            )));
+        }
         let resp = self
             .req(
                 Method::GET,

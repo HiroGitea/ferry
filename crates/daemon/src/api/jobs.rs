@@ -327,6 +327,12 @@ pub async fn release(
 }
 
 fn workspace_of(state: &AppState, job: &Job) -> Workspace {
+    if job.workspace_deleted {
+        if let Some(a) = &job.archive_path {
+            // Archive has the same layout (out/, job.log) as a workspace.
+            return Workspace::open(a.into());
+        }
+    }
     match &job.workspace_path {
         Some(p) => Workspace::open(p.into()),
         None => Workspace::open(Workspace::path_for(
