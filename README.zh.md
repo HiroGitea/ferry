@@ -38,6 +38,12 @@ sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 make release      # 构建面板并嵌入二进制：target/release/{ferryd,ferry}
 ```
 
+也可以不装 Rust 和 Node，直接从 [Releases](https://github.com/HiroGitea/ferry/releases) 下载预编译二进制（x86_64 / aarch64，glibc ≥ 2.28），压缩包里也带了 `packaging/`：
+
+```bash
+tar xzf ferry-*-x86_64-unknown-linux-gnu.tar.gz && cd ferry-*-x86_64-unknown-linux-gnu
+```
+
 ```bash
 sudo useradd -r -m -d /var/lib/ferry -s /usr/bin/nologin ferry && sudo loginctl enable-linger ferry
 ```
@@ -181,6 +187,14 @@ cargo test --workspace
 ```bash
 cd web && pnpm dev       # 面板开发服务器，API 走代理
 ```
+
+发布是自动的：每次推送 CI（`.github/workflows/ci.yml`）会跑 fmt、clippy、测试和面板构建；把 `Cargo.toml` 里的 `version` 改好，再推送同名 tag 就会发布二进制：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+带后缀的 tag（`v0.2.0-rc.1`）发布为预发布版。本地用 `make dist` 可以打出同样的压缩包。
 
 目录：`crates/core`（类型、纯函数调度器）、`crates/daemon`（`ferryd`：API、任务、执行器、节点、监控、存档）、`crates/client`、`crates/mcp`、`crates/cli`（`ferry`）、`web/`（React 面板）、`packaging/`、`images/`。约定见 `CLAUDE.md`。
 

@@ -1,4 +1,4 @@
-.PHONY: all web build release test dev-daemon fmt clean
+.PHONY: all web build release dist test lint dev-daemon fmt clean
 
 all: release
 
@@ -12,8 +12,16 @@ build:
 release: web
 	cargo build --release --features ferry-daemon/embed-web
 
+# dist/ferry-<version>-<host>.tar.gz, the same layout as the GitHub release assets.
+dist: release
+	scripts/dist.sh host
+
 test:
 	cargo test --workspace
+
+lint:
+	cargo fmt --all --check
+	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
 	cargo fmt --all

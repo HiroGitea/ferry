@@ -55,6 +55,13 @@ sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 make release      # builds the dashboard and embeds it: target/release/{ferryd,ferry}
 ```
 
+Or skip the Rust and Node toolchains and take prebuilt binaries (x86_64 / aarch64, glibc ≥ 2.28) from
+[Releases](https://github.com/HiroGitea/ferry/releases); each tarball also carries `packaging/`:
+
+```bash
+tar xzf ferry-*-x86_64-unknown-linux-gnu.tar.gz && cd ferry-*-x86_64-unknown-linux-gnu
+```
+
 ```bash
 sudo useradd -r -m -d /var/lib/ferry -s /usr/bin/nologin ferry && sudo loginctl enable-linger ferry
 ```
@@ -206,6 +213,15 @@ cargo test --workspace
 ```bash
 cd web && pnpm dev       # dashboard dev server, proxies the API
 ```
+
+Releases are automated: CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and the dashboard
+build on every push; bumping `version` in `Cargo.toml` and pushing a matching tag publishes binaries:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Tags with a suffix (`v0.2.0-rc.1`) become pre-releases. `make dist` builds the same tarball locally.
 
 Layout: `crates/core` (types, pure scheduler), `crates/daemon` (`ferryd`: API, tasks, executors,
 nodes, metrics, archives), `crates/client`, `crates/mcp`, `crates/cli` (`ferry`), `web/`
