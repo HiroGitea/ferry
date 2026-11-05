@@ -27,3 +27,4 @@ tabled.workspace = true
 tar.workspace = true
 flate2.workspace = true
 dialoguer.workspace = true
+libc = "0.2"

@@ -111,6 +111,15 @@ pub struct Job {
     /// The SSD workspace has been removed by the retention sweep.
     #[serde(default)]
     pub workspace_deleted: bool,
+    /// The long-lived task (environment) this job is a step of.
+    #[serde(default)]
+    pub task_id: Option<i64>,
+    /// Snapshot the step's environment started from (`None` = the task's base image).
+    #[serde(default)]
+    pub base_snapshot_id: Option<i64>,
+    /// Snapshot saved after this step succeeded.
+    #[serde(default)]
+    pub snapshot_id: Option<i64>,
 }
 
 impl Job {

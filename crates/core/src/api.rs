@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::job::{Job, JobId, JobState};
-use crate::resource::ResourceRequest;
+use crate::resource::ResourceOverrides;
+use crate::task::{SnapshotId, TaskId};
 use crate::user::{Quota, Role, User, UserId};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -18,8 +19,10 @@ pub struct SubmitJobRequest {
     pub command: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Unset fields come from the task's defaults (for task steps) or the global default
+    /// (2 CPUs, 8G, 0 GPUs).
     #[serde(default)]
-    pub resources: ResourceRequest,
+    pub resources: ResourceOverrides,
     #[serde(default)]
     pub priority: i32,
     #[serde(default)]
@@ -36,6 +39,10 @@ pub struct SubmitJobRequest {
     /// Validate and report a scheduling estimate without creating the job.
     #[serde(default)]
     pub dry_run: bool,
+    /// Run as the next step of this task: starts from the task's latest snapshot, shares its
+    /// /work and /out. `image` must not be set.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -220,6 +227,7 @@ pub struct PullImageRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     JobUpdated { job: Job },
+    TaskUpdated { task_id: TaskId },
     JobLog { job_id: JobId, line: String },
     GpusUpdated,
     Heartbeat,
@@ -228,4 +236,96 @@ pub enum Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+// ---------- tasks ----------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CreateTaskRequest {
+    pub name: String,
+    /// Base image (default: the daemon's default_image).
+    pub image: Option<String>,
+    /// Default resources for steps.
+    #[serde(default)]
+    pub resources: ResourceOverrides,
+    /// Keep the container running this long after a successful step (0 = stop immediately).
+    pub keep_warm_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UpdateTaskRequest {
+    pub name: Option<String>,
+    pub keep_warm_secs: Option<u64>,
+    #[serde(default)]
+    pub resources: ResourceOverrides,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CheckoutRequest {
+    /// Snapshot to make the task's HEAD; `None` resets to the base image.
+    pub snapshot_id: Option<SnapshotId>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PinSnapshotRequest {
+    pub pinned: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListTasksQuery {
+    /// Include closed tasks.
+    #[serde(default)]
+    pub all: bool,
+    /// User name, or "all" (admin).
+    pub user: Option<String>,
+}
+
+// ---------- metrics ----------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricsQuery {
+    /// Comma separated keys; a trailing `*` matches a prefix (e.g. `host.*,gpu.0.*`).
+    pub keys: String,
+    /// Unix seconds, or negative = relative to now (e.g. -600).
+    pub after: Option<i64>,
+    /// Unix seconds, 0/None = now, negative = relative to now.
+    pub before: Option<i64>,
+    /// Desired number of points per series (default 300).
+    pub points: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MetricSeries {
+    pub key: String,
+    pub unit: String,
+    /// `[t, avg]` per bucket; `None` = no data.
+    pub points: Vec<(i64, Option<f32>)>,
+    /// Bucket maxima (same timestamps), so peaks survive downsampling.
+    pub max: Vec<Option<f32>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MetricsResult {
+    pub after: i64,
+    pub before: i64,
+    /// Seconds per point.
+    pub step: i64,
+    /// 0 = per-second, 1 = per-minute, 2 = per-hour.
+    pub tier: u8,
+    pub series: Vec<MetricSeries>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MetricInfo {
+    pub key: String,
+    pub unit: String,
+    pub last_t: Option<i64>,
+}
+
+/// One collection tick pushed over `/metrics/stream`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricTick {
+    pub t: i64,
+    pub values: std::collections::BTreeMap<String, f32>,
 }

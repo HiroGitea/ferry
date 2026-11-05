@@ -35,6 +35,7 @@ pub struct Config {
     pub container: ContainerConfig,
     pub retention: RetentionConfig,
     pub fair_share: FairShareConfig,
+    pub metrics: crate::metrics::MetricsConfig,
     pub log_level: String,
 }
 
@@ -116,6 +117,7 @@ impl Default for Config {
             container: ContainerConfig::default(),
             retention: RetentionConfig::default(),
             fair_share: FairShareConfig::default(),
+            metrics: crate::metrics::MetricsConfig::default(),
             log_level: "info".into(),
         }
     }

@@ -5,11 +5,13 @@ use std::time::Duration;
 use anyhow::Context;
 use futures::StreamExt;
 use mlq_core::api::{
-    ArtifactEntry, ClusterStatus, CreateTokenRequest, CreateUserRequest, ErrorBody, Event, GpuInfo,
-    ImageInfo, JobResult, ListJobsQuery, LogChunk, Me, PullImageRequest, SubmitJobRequest,
-    SubmitJobResponse, TokenCreated, TokenInfo, UsageQuery, UserUsage,
+    ArtifactEntry, CheckoutRequest, ClusterStatus, CreateTaskRequest, CreateTokenRequest,
+    CreateUserRequest, ErrorBody, Event, GpuInfo, ImageInfo, JobResult, ListJobsQuery,
+    ListTasksQuery, LogChunk, Me, MetricInfo, MetricsQuery, MetricsResult, PinSnapshotRequest,
+    PullImageRequest, SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo,
+    UpdateTaskRequest, UsageQuery, UserUsage,
 };
-use mlq_core::{Job, JobId, Quota, User};
+use mlq_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 
@@ -264,6 +266,75 @@ impl Client {
     }
     pub async fn sweep(&self) -> Result<serde_json::Value, ClientError> {
         self.send(self.req(Method::POST, "/retention/sweep")).await
+    }
+
+    // ---- tasks
+    pub async fn create_task(&self, req: &CreateTaskRequest) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::POST, "/tasks").json(req)).await
+    }
+    pub async fn tasks(&self, q: &ListTasksQuery) -> Result<Vec<TaskSummary>, ClientError> {
+        self.send(self.req(Method::GET, "/tasks").query(q)).await
+    }
+    pub async fn task(&self, id: TaskId) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::GET, &format!("/tasks/{id}")))
+            .await
+    }
+    pub async fn update_task(
+        &self,
+        id: TaskId,
+        req: &UpdateTaskRequest,
+    ) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::PATCH, &format!("/tasks/{id}")).json(req))
+            .await
+    }
+    pub async fn checkout(
+        &self,
+        id: TaskId,
+        snapshot_id: Option<i64>,
+    ) -> Result<TaskDetail, ClientError> {
+        self.send(
+            self.req(Method::POST, &format!("/tasks/{id}/checkout"))
+                .json(&CheckoutRequest { snapshot_id }),
+        )
+        .await
+    }
+    pub async fn pin_snapshot(
+        &self,
+        id: TaskId,
+        sid: i64,
+        pinned: bool,
+        note: Option<String>,
+    ) -> Result<TaskDetail, ClientError> {
+        self.send(
+            self.req(Method::POST, &format!("/tasks/{id}/snapshots/{sid}/pin"))
+                .json(&PinSnapshotRequest { pinned, note }),
+        )
+        .await
+    }
+    pub async fn close_task(&self, id: TaskId) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::POST, &format!("/tasks/{id}/close")))
+            .await
+    }
+    pub async fn reopen_task(&self, id: TaskId) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::POST, &format!("/tasks/{id}/reopen")))
+            .await
+    }
+    pub async fn delete_task(&self, id: TaskId) -> Result<serde_json::Value, ClientError> {
+        self.send(self.req(Method::DELETE, &format!("/tasks/{id}")))
+            .await
+    }
+
+    // ---- metrics
+    pub async fn metric_keys(&self, prefix: Option<&str>) -> Result<Vec<MetricInfo>, ClientError> {
+        let mut rb = self.req(Method::GET, "/metrics/keys");
+        if let Some(p) = prefix {
+            rb = rb.query(&[("prefix", p)]);
+        }
+        self.send(rb).await
+    }
+    pub async fn metrics(&self, q: &MetricsQuery) -> Result<MetricsResult, ClientError> {
+        self.send(self.req(Method::GET, "/metrics/query").query(q))
+            .await
     }
 
     /// Subscribe to server-sent events. Calls `f` for every decoded event until the connection drops.

@@ -10,7 +10,7 @@ use mlq_core::api::{
     ArtifactEntry, Event, JobResult, ListJobsQuery, LogChunk, LogQuery, SubmitJobRequest,
     SubmitJobResponse,
 };
-use mlq_core::{Job, JobId, JobState};
+use mlq_core::{Job, JobId, JobState, ResourceRequest, TaskState};
 use serde::Deserialize;
 
 use super::{ApiError, ApiResult};
@@ -53,11 +53,15 @@ pub fn expand_array(spec: &str) -> Result<Vec<u32>, ApiError> {
     Ok(out)
 }
 
-fn validate(state: &AppState, req: &SubmitJobRequest) -> Result<(), ApiError> {
+fn validate(
+    state: &AppState,
+    req: &SubmitJobRequest,
+    res: &ResourceRequest,
+) -> Result<(), ApiError> {
     if req.command.is_empty() {
         return Err(ApiError::BadRequest("command must not be empty".into()));
     }
-    if req.resources.cpus <= 0.0 || req.resources.mem_bytes == 0 {
+    if res.cpus <= 0.0 || res.mem_bytes == 0 {
         return Err(ApiError::BadRequest(
             "cpus and mem_bytes must be positive".into(),
         ));
@@ -79,12 +83,9 @@ fn validate(state: &AppState, req: &SubmitJobRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn estimate(state: &AppState, req: &SubmitJobRequest, active: &[Job]) -> String {
+fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
     let inv = inventory(state);
-    if req.resources.cpus > inv.cpus
-        || req.resources.mem_bytes > inv.mem_bytes
-        || req.resources.gpus as usize > inv.gpus.len()
-    {
+    if res.cpus > inv.cpus || res.mem_bytes > inv.mem_bytes || res.gpus as usize > inv.gpus.len() {
         return format!(
             "will never run: request exceeds managed inventory ({} cpus, {} mem, {} gpus)",
             inv.cpus,
@@ -105,9 +106,7 @@ fn estimate(state: &AppState, req: &SubmitJobRequest, active: &[Job]) -> String 
             queued_ahead += 1;
         }
     }
-    let fits = req.resources.cpus <= free_cpus
-        && req.resources.mem_bytes <= free_mem
-        && req.resources.gpus as usize <= free_gpus;
+    let fits = res.cpus <= free_cpus && res.mem_bytes <= free_mem && res.gpus as usize <= free_gpus;
     if fits && queued_ahead == 0 {
         "resources available: expected to start immediately".into()
     } else {
@@ -123,9 +122,40 @@ pub async fn submit(
     user: AuthUser,
     Json(req): Json<SubmitJobRequest>,
 ) -> ApiResult<SubmitJobResponse> {
-    validate(&state, &req)?;
+    // Steps of a task inherit the task's resources and environment.
+    let task = match req.task_id {
+        Some(tid) => {
+            let t = state
+                .store
+                .task(tid)
+                .await?
+                .ok_or_else(|| ApiError::NotFound(format!("task {tid}")))?;
+            if t.user_id != user.0.id && !user.is_admin() {
+                return Err(ApiError::Forbidden("not your task".into()));
+            }
+            if t.state != TaskState::Open {
+                return Err(ApiError::Conflict(format!(
+                    "task {tid} is {}",
+                    t.state.as_str()
+                )));
+            }
+            if req.image.is_some() {
+                return Err(ApiError::BadRequest(
+                    "a task step runs in the task's environment; do not set image".into(),
+                ));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    let base = task
+        .as_ref()
+        .map(|t| t.resources.clone())
+        .unwrap_or_default();
+    let resources = req.resources.apply(&base);
+    validate(&state, &req, &resources)?;
     let active = state.store.active_jobs().await?;
-    let est = estimate(&state, &req, &active);
+    let est = estimate(&state, &resources, &active);
     let indices: Vec<Option<u32>> = match &req.array {
         Some(spec) => expand_array(spec)?.into_iter().map(Some).collect(),
         None => vec![None],
@@ -162,10 +192,13 @@ pub async fn submit(
             estimate: est,
         }));
     }
-    let image = req
-        .image
-        .clone()
-        .unwrap_or_else(|| state.config.default_image.clone());
+    let image = match &task {
+        Some(t) => crate::tasks::head_image(&state, t).await.0,
+        None => req
+            .image
+            .clone()
+            .unwrap_or_else(|| state.config.default_image.clone()),
+    };
     let base_name = req
         .name
         .clone()
@@ -184,7 +217,7 @@ pub async fn submit(
                 image: image.clone(),
                 command: req.command.clone(),
                 env: req.env.clone(),
-                resources: req.resources.clone(),
+                resources: resources.clone(),
                 state: if req.hold {
                     JobState::Held
                 } else {
@@ -194,19 +227,27 @@ pub async fn submit(
                 depends_on: req.depends_on.clone(),
                 array_index: idx,
                 time_limit_secs: req.time_limit_secs,
+                task_id: req.task_id,
             })
             .await?;
         // Inline files are written now so they are present even if the job is held.
         if !req.files.is_empty() {
-            let ws = Workspace::create(Workspace::path_for(
-                &state.config.scratch_root(),
-                &user.0.name,
-                job.id,
-            ))?;
+            let ws = match &task {
+                Some(t) => crate::tasks::ensure_workspace(&state, t).await?,
+                None => Workspace::create(Workspace::path_for(
+                    &state.config.scratch_root(),
+                    &user.0.name,
+                    job.id,
+                ))?,
+            };
             ws.write_files(&req.files)?;
         }
         state.events.publish(Event::JobUpdated { job: job.clone() });
         jobs.push(job);
+    }
+    if let Some(t) = &task {
+        let _ = state.store.touch_task(t.id).await;
+        crate::tasks::publish_task(&state, t.id);
     }
     state.wake.notify_one();
     Ok(Json(SubmitJobResponse {
@@ -329,13 +370,18 @@ pub async fn release(
 fn workspace_of(state: &AppState, job: &Job) -> Workspace {
     if job.workspace_deleted {
         if let Some(a) = &job.archive_path {
-            // Archive has the same layout (out/, job.log) as a workspace.
+            // Archives have the same layout (out/, job.log or logs/<id>.log) as workspaces.
             return Workspace::open(a.into());
         }
     }
-    match &job.workspace_path {
-        Some(p) => Workspace::open(p.into()),
-        None => Workspace::open(Workspace::path_for(
+    match (&job.workspace_path, job.task_id) {
+        (Some(p), _) => Workspace::open(p.into()),
+        (None, Some(t)) => Workspace::open(Workspace::task_path_for(
+            &state.config.scratch_root(),
+            &job.user_name,
+            t,
+        )),
+        (None, None) => Workspace::open(Workspace::path_for(
             &state.config.scratch_root(),
             &job.user_name,
             job.id,
@@ -351,7 +397,7 @@ pub async fn log(
 ) -> ApiResult<LogChunk> {
     let job = load_job(&state, &user, id).await?;
     let ws = workspace_of(&state, &job);
-    let (content, next) = read_log(&ws.log(), q.tail, q.offset)?;
+    let (content, next) = read_log(&ws.log_for(&job), q.tail, q.offset)?;
     Ok(Json(LogChunk {
         job_id: id,
         content,
@@ -414,7 +460,7 @@ pub async fn result(
     let job = load_job(&state, &user, id).await?;
     let ws = workspace_of(&state, &job);
     let artifacts = ws.list_out()?;
-    let (log_tail, _) = read_log(&ws.log(), Some(100), None)?;
+    let (log_tail, _) = read_log(&ws.log_for(&job), Some(100), None)?;
     Ok(Json(JobResult {
         job,
         artifacts,
@@ -467,11 +513,21 @@ pub async fn upload_files(
             job.state
         )));
     }
-    let ws = Workspace::create(Workspace::path_for(
-        &state.config.scratch_root(),
-        &job.user_name,
-        job.id,
-    ))?;
+    let ws = match job.task_id {
+        Some(tid) => {
+            let t = state
+                .store
+                .task(tid)
+                .await?
+                .ok_or_else(|| ApiError::NotFound(format!("task {tid}")))?;
+            crate::tasks::ensure_workspace(&state, &t).await?
+        }
+        None => Workspace::create(Workspace::path_for(
+            &state.config.scratch_root(),
+            &job.user_name,
+            job.id,
+        ))?,
+    };
     let n = tokio::task::spawn_blocking(move || ws.unpack_tar_gz(&body))
         .await
         .map_err(|e| ApiError::Internal(e.into()))??;

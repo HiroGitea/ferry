@@ -45,6 +45,9 @@ pub struct SchedulerInput<'a> {
     pub quotas: &'a HashMap<UserId, Quota>,
     /// Decayed GPU-seconds per user (fair-share). Missing users count as 0.
     pub fair_usage: &'a HashMap<UserId, f64>,
+    /// GPUs a task's warm container already has attached; steps of that task get them back
+    /// when they are free so the warm container can be reused.
+    pub gpu_affinity: &'a HashMap<i64, Vec<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +63,7 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
         jobs,
         quotas,
         fair_usage,
+        gpu_affinity,
     } = input;
     let by_id: HashMap<JobId, &Job> = jobs.iter().map(|j| (j.id, j)).collect();
 
@@ -114,6 +118,22 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                 reason,
             });
             continue;
+        }
+        // Steps of one task share an environment: run them one at a time, in submission order.
+        if let Some(t) = j.task_id {
+            let earlier = jobs.iter().find(|k| {
+                k.task_id == Some(t)
+                    && k.id != j.id
+                    && (k.state.is_active()
+                        || (matches!(k.state, JobState::Queued | JobState::Held) && k.id < j.id))
+            });
+            if let Some(k) = earlier {
+                decisions.push(Decision::Wait {
+                    job_id: j.id,
+                    reason: format!("waiting for step {} of task {t}", k.id),
+                });
+                continue;
+            }
         }
         // Impossible requests.
         if j.resources.cpus > inventory.cpus
@@ -181,7 +201,16 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
             });
             continue;
         }
-        let gpu_ids: Vec<u32> = free.gpus.drain(..j.resources.gpus as usize).collect();
+        let want = j.resources.gpus as usize;
+        let gpu_ids: Vec<u32> = match j.task_id.and_then(|t| gpu_affinity.get(&t)) {
+            Some(pref)
+                if want > 0 && pref.len() == want && pref.iter().all(|g| free.gpus.contains(g)) =>
+            {
+                free.gpus.retain(|g| !pref.contains(g));
+                pref.clone()
+            }
+            _ => free.gpus.drain(..want).collect(),
+        };
         free.cpus -= j.resources.cpus;
         free.mem -= j.resources.mem_bytes;
         *running_jobs.entry(j.user_id).or_default() += 1;
@@ -230,6 +259,9 @@ mod tests {
             reason: None,
             archive_path: None,
             workspace_deleted: false,
+            task_id: None,
+            base_snapshot_id: None,
+            snapshot_id: None,
         }
     }
 
@@ -252,7 +284,64 @@ mod tests {
             jobs,
             quotas: &quotas,
             fair_usage: &fair,
+            gpu_affinity: &HashMap::new(),
         })
+    }
+
+    #[test]
+    fn task_steps_run_sequentially() {
+        let mut a = job(1, 1, 1.0, 0, JobState::Running);
+        a.task_id = Some(9);
+        let mut b = job(2, 1, 1.0, 0, JobState::Queued);
+        b.task_id = Some(9);
+        let mut c = job(3, 1, 1.0, 0, JobState::Queued);
+        c.task_id = Some(9);
+        let mut other = job(4, 1, 1.0, 0, JobState::Queued);
+        other.task_id = Some(10);
+        let d = run(
+            &inv(),
+            &[a.clone(), b.clone(), c.clone(), other],
+            Default::default(),
+            Default::default(),
+        );
+        assert_eq!(starts(&d), vec![(4, vec![])]);
+        assert!(d.iter().any(
+            |x| matches!(x, Decision::Wait { job_id: 2, reason } if reason.contains("step 1"))
+        ));
+        assert!(d.iter().any(
+            |x| matches!(x, Decision::Wait { job_id: 3, reason } if reason.contains("task 9"))
+        ));
+        // once step 1 finished, step 2 (not 3) starts
+        a.state = JobState::Succeeded;
+        let d = run(&inv(), &[a, b, c], Default::default(), Default::default());
+        assert_eq!(starts(&d), vec![(2, vec![])]);
+    }
+
+    #[test]
+    fn warm_gpu_affinity() {
+        let mut j = job(1, 1, 1.0, 2, JobState::Queued);
+        j.task_id = Some(5);
+        let mut aff = HashMap::new();
+        aff.insert(5, vec![2, 3]);
+        let d = schedule(SchedulerInput {
+            inventory: &inv(),
+            jobs: &[j.clone()],
+            quotas: &HashMap::new(),
+            fair_usage: &HashMap::new(),
+            gpu_affinity: &aff,
+        });
+        assert_eq!(starts(&d), vec![(1, vec![2, 3])]);
+        // preferred GPU busy -> falls back to first fit
+        let mut busy = job(2, 2, 1.0, 1, JobState::Running);
+        busy.gpu_ids = vec![3];
+        let d = schedule(SchedulerInput {
+            inventory: &inv(),
+            jobs: &[j, busy],
+            quotas: &HashMap::new(),
+            fair_usage: &HashMap::new(),
+            gpu_affinity: &aff,
+        });
+        assert_eq!(starts(&d), vec![(1, vec![0, 1])]);
     }
 
     fn starts(d: &[Decision]) -> Vec<(JobId, Vec<u32>)> {

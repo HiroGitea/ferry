@@ -43,6 +43,7 @@ walkdir.workspace = true
 dirs.workspace = true
 async-trait = "0.1"
 hex = "0.4"
+libc = "0.2"
 rust-embed.workspace = true
 mime_guess.workspace = true
 nvml-wrapper = { workspace = true, optional = true }

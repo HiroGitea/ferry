@@ -24,9 +24,17 @@ Claude Code / 面板 / mlq CLI ──token──▶ mlqd (axum, SQLite)
   删除后 `mlq result` / MCP `read_artifact` / 面板自动改从归档读取。
 - **MCP**：`mlq mcp serve`（stdio）和 `http://host:7070/mcp`（Streamable HTTP + Bearer token）两种接入；
   工具：`cluster_status`、`submit_job`（默认 dry-run）、`run_job`（同步等待 + 进度通知）、`list_jobs`、
-  `get_job`、`cancel_job`、`get_job_log`、`get_result`、`read_artifact`、`get_usage`。
-- **面板**：用量与配额（每用户 GPU 时、每日堆叠图、配额进度、fair-share）、作业（实时日志、产物下载、取消）、
-  GPU 实时指标、用户管理；SSE 实时刷新，断线自动退化为轮询；浅色/深色。
+  `get_job`、`cancel_job`、`get_job_log`、`get_result`、`read_artifact`、`get_usage`，
+  以及任务相关的 `create_task`、`list_tasks`、`get_task`、`checkout_snapshot`、`close_task` 和监控 `get_metrics`。
+- **任务（大任务 / 多步骤 / 存档）**：一个任务 = 一个长期环境，步骤（小任务）依次在里面运行，共享 `/work`、`/out`。
+  每个**成功**步骤后自动 `podman commit` 存档并成为 HEAD；**失败/取消/超时**的步骤丢弃改动、回滚到上一个存档；
+  可以 checkout 任意存档继续（分支），pin 住重要存档，旧存档自动清理（保留 5 个 + HEAD + pinned）。
+  可选“保温”：成功步骤后容器空闲保留 N 分钟（不占调度器资源），下一步配置相同时直接 `exec` 进去，零启动开销。
+- **监控（仿 netdata）**：每秒采集宿主机（/proc：CPU、负载、内存、磁盘/网络 IO、SSD/NAS 占用）、GPU（NVML：利用率、显存、温度、功耗）、
+  调度器，以及每个作业/任务容器的 cgroup（CPU、内存、IO、进程数、所用 GPU）。存储分三层：内存环形缓冲 + 逐秒页（60 点压缩）、
+  逐分钟、逐小时（每点存 min/max/sum/count，降采样后峰值不丢），各层独立保留期；查询按时间跨度自动选层。
+- **面板**：监控页（几十张同步十字线的实时图，5 分钟～30 天）、任务页（步骤时间线、存档列表/checkout/pin、整个生命周期的资源曲线并标出每个步骤）、
+  用量与配额、作业（实时日志、产物下载、资源曲线、取消）、GPU、用户管理；SSE 实时推送；浅色/深色。
 
 ## 安装（Arch Linux）
 
@@ -97,6 +105,42 @@ mlq queue -a                              # 队列；mlq logs <id> -f；mlq canc
 mlq result <id> --download ./out          # 产物（/out）列表与下载，SSD 清理后自动从归档取
 ```
 
+### 多步骤任务
+
+```bash
+mlq task create llm-eval -g 1 -m 32G --keep-warm 10m     # 打印任务 id，例如 3
+```
+
+```bash
+mlq run --task 3 -- pip install -r requirements.txt      # 成功 → 存档 1
+```
+
+```bash
+mlq run --task 3 -- python preprocess.py                 # 从存档 1 开始（保温时直接复用容器）→ 存档 2
+```
+
+```bash
+mlq run --task 3 -g 2 -- python train.py                 # 步骤可覆盖资源；失败会回滚到存档 2
+```
+
+```bash
+mlq task show 3                                          # 步骤、存档、HEAD
+```
+
+```bash
+mlq task checkout 3 1                                    # 回到存档 1 继续（mlq task checkout 3 --base 回到基础镜像）
+```
+
+```bash
+mlq task close 3                                         # 结束：取消排队步骤、停保温容器、归档 /out
+```
+
+### 监控
+
+```bash
+mlq metrics 'gpu.*' --since 1h                           # 终端里的 sparkline；--list 列出所有指标
+```
+
 管理员：`mlq user add alice`（打印其 token）、`mlq quota alice --gpus 2 --jobs 4`、`mlq usage -u all`、`mlq image pull <ref>`、`mlq sweep`。
 
 ### 接入 Claude
@@ -130,6 +174,10 @@ cd web && pnpm dev   # 面板开发服务器，API 代理到 127.0.0.1:7070
 ```
 
 ## 目前的限制
+
+- 存档是容器镜像层：每个成功步骤增加一层，同一条链超过约 100 个成功步骤会触及 overlay 层数上限（届时 checkout 到早期存档或 `--base` 重新搭环境）。
+- 存档只覆盖容器文件系统；`/work` 和 `/out` 是 SSD 上的目录，不随 checkout 回滚。
+- 保温容器不占调度器资源，下一步只有在镜像、CPU、内存和分到的 GPU 都相同时才复用，否则冷启动（从存档启动，通常 1 秒内）。
 
 - 单机。数据模型里保留了 `node_id` 和 `Executor` 抽象，多节点需要增加一个在计算节点上运行的 agent 执行器。
 - 整卡分配，不做显存切分（可在训练代码里用 `torch.cuda.set_per_process_memory_fraction`）。

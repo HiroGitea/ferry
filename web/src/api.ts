@@ -45,6 +45,83 @@ export interface Job {
   reason: string | null;
   archive_path: string | null;
   workspace_deleted: boolean;
+  task_id: number | null;
+  base_snapshot_id: number | null;
+  snapshot_id: number | null;
+}
+
+export interface Task {
+  id: number;
+  user_id: number;
+  user_name: string;
+  name: string;
+  base_image: string;
+  resources: ResourceRequest;
+  keep_warm_secs: number;
+  state: "open" | "closed" | "deleted";
+  head_snapshot_id: number | null;
+  workspace_path: string | null;
+  archive_path: string | null;
+  warm_container: string | null;
+  warm_until: string | null;
+  warm_gpus: number[];
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+export interface Snapshot {
+  id: number;
+  task_id: number;
+  parent_id: number | null;
+  job_id: number | null;
+  image: string;
+  size_bytes: number | null;
+  note: string | null;
+  pinned: boolean;
+  deleted: boolean;
+  created_at: string;
+}
+
+export interface TaskSummary {
+  task: Task;
+  steps: number;
+  snapshots: number;
+  activity: "running" | "queued" | "warm" | "idle" | "closed";
+  last_step: Job | null;
+}
+
+export interface TaskDetail {
+  summary: TaskSummary;
+  steps: Job[];
+  snapshots: Snapshot[];
+  head_image: string;
+}
+
+export interface ResourceOverrides {
+  cpus?: number | null;
+  mem_bytes?: number | null;
+  gpus?: number | null;
+}
+
+export interface MetricSeries {
+  key: string;
+  unit: string;
+  points: Array<[number, number | null]>;
+  max: Array<number | null>;
+}
+
+export interface MetricsResult {
+  after: number;
+  before: number;
+  step: number;
+  tier: number;
+  series: MetricSeries[];
+}
+
+export interface MetricTick {
+  t: number;
+  values: Record<string, number>;
 }
 
 export interface User {
@@ -232,6 +309,22 @@ export const api = {
     request<Quota>("PUT", `/users/${encodeURIComponent(name)}/quota`, q),
   createToken: (p: { name?: string; user?: string }) => request<TokenCreated>("POST", "/tokens", p),
   sweep: () => request<unknown>("POST", "/retention/sweep"),
+  submit: (body: Record<string, unknown>) => request<{ jobs: Job[]; estimate: string }>("POST", "/jobs", body),
+  tasks: (p: { all?: boolean; user?: string }) => request<TaskSummary[]>("GET", `/tasks${qs(p)}`),
+  task: (id: number) => request<TaskDetail>("GET", `/tasks/${id}`),
+  createTask: (body: { name: string; image?: string; resources?: ResourceOverrides; keep_warm_secs?: number }) =>
+    request<TaskDetail>("POST", "/tasks", body),
+  updateTask: (id: number, body: { name?: string; keep_warm_secs?: number; resources?: ResourceOverrides }) =>
+    request<TaskDetail>("PATCH", `/tasks/${id}`, body),
+  checkout: (id: number, snapshot_id: number | null) => request<TaskDetail>("POST", `/tasks/${id}/checkout`, { snapshot_id }),
+  pinSnapshot: (id: number, sid: number, pinned: boolean, note?: string) =>
+    request<TaskDetail>("POST", `/tasks/${id}/snapshots/${sid}/pin`, { pinned, note }),
+  closeTask: (id: number) => request<TaskDetail>("POST", `/tasks/${id}/close`),
+  reopenTask: (id: number) => request<TaskDetail>("POST", `/tasks/${id}/reopen`),
+  deleteTask: (id: number) => request<unknown>("DELETE", `/tasks/${id}`),
+  metrics: (p: { keys: string; after?: number; before?: number; points?: number }) =>
+    request<MetricsResult>("GET", `/metrics/query${qs(p)}`),
+  metricsStreamUrl: () => `/api/v1/metrics/stream?token=${encodeURIComponent(getToken() ?? "")}`,
   eventsUrl: () => `/api/v1/events?token=${encodeURIComponent(getToken() ?? "")}`,
 };
 
@@ -269,4 +362,11 @@ export function fmtTime(iso: string | null): string {
 
 export function hours(secs: number): string {
   return (secs / 3600).toFixed(secs >= 36000 ? 0 : 1);
+}
+
+export function parseBytes(s: string): number | null {
+  const m = /^\s*([\d.]+)\s*([kmgt]?)i?b?\s*$/i.exec(s);
+  if (!m) return null;
+  const mult: Record<string, number> = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 };
+  return Math.round(parseFloat(m[1]) * mult[m[2].toLowerCase()]);
 }

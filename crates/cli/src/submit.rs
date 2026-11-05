@@ -6,22 +6,25 @@ use clap::Args;
 use mlq_client::Client;
 use mlq_core::Job;
 use mlq_core::api::SubmitJobRequest;
-use mlq_core::resource::ResourceRequest;
+use mlq_core::resource::ResourceOverrides;
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct SubmitArgs {
     /// Job name
     #[arg(short = 'J', long)]
     pub name: Option<String>,
-    /// CPU cores
-    #[arg(short = 'c', long, default_value = "2")]
-    pub cpus: f64,
-    /// Memory limit, e.g. 16G
-    #[arg(short = 'm', long, default_value = "8G")]
-    pub mem: String,
-    /// Number of GPUs
-    #[arg(short = 'g', long, default_value = "0")]
-    pub gpus: u32,
+    /// CPU cores [default: 2, or the task's default]
+    #[arg(short = 'c', long)]
+    pub cpus: Option<f64>,
+    /// Memory limit, e.g. 16G [default: 8G, or the task's default]
+    #[arg(short = 'm', long)]
+    pub mem: Option<String>,
+    /// Number of GPUs [default: 0, or the task's default]
+    #[arg(short = 'g', long)]
+    pub gpus: Option<u32>,
+    /// Run as the next step of this task (environment saved between steps)
+    #[arg(short = 'T', long = "task")]
+    pub task: Option<i64>,
     /// Container image
     #[arg(short = 'i', long)]
     pub image: Option<String>,
@@ -135,16 +138,10 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
                 .args;
             // Directives provide defaults; explicit CLI flags are not distinguishable from defaults here,
             // so directives win only for fields left at their default on the command line.
-            let d = SubmitArgs::default();
-            if args.cpus == 2.0 && parsed.cpus != 2.0 {
-                args.cpus = parsed.cpus;
-            }
-            if args.mem == "8G" && parsed.mem != "8G" {
-                args.mem = parsed.mem;
-            }
-            if args.gpus == d.gpus {
-                args.gpus = parsed.gpus;
-            }
+            args.cpus = args.cpus.or(parsed.cpus);
+            args.mem = args.mem.or(parsed.mem);
+            args.gpus = args.gpus.or(parsed.gpus);
+            args.task = args.task.or(parsed.task);
             if args.image.is_none() {
                 args.image = parsed.image;
             }
@@ -191,9 +188,9 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         image: args.image.clone(),
         command: args.command.clone(),
         env,
-        resources: ResourceRequest {
+        resources: ResourceOverrides {
             cpus: args.cpus,
-            mem_bytes: mlq_core::parse_bytes(&args.mem)?,
+            mem_bytes: args.mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
             gpus: args.gpus,
         },
         priority: args.priority,
@@ -207,6 +204,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
         hold: args.hold || !uploads.is_empty(),
         files: BTreeMap::new(),
         dry_run: args.dry_run,
+        task_id: args.task,
     };
     Ok((req, uploads))
 }

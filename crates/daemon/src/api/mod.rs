@@ -3,7 +3,9 @@
 pub mod admin;
 pub mod info;
 pub mod jobs;
+pub mod metrics;
 pub mod sse;
+pub mod tasks;
 pub mod web;
 
 use std::sync::Arc;
@@ -93,6 +95,18 @@ pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/usage", get(admin::usage))
         .route("/retention/sweep", post(admin::sweep))
         .route("/events", get(sse::events))
+        .route("/tasks", get(tasks::list).post(tasks::create))
+        .route(
+            "/tasks/{id}",
+            get(tasks::get).patch(tasks::update).delete(tasks::delete),
+        )
+        .route("/tasks/{id}/checkout", post(tasks::checkout))
+        .route("/tasks/{id}/close", post(tasks::close))
+        .route("/tasks/{id}/reopen", post(tasks::reopen))
+        .route("/tasks/{id}/snapshots/{sid}/pin", post(tasks::pin))
+        .route("/metrics/keys", get(metrics::keys))
+        .route("/metrics/query", get(metrics::query))
+        .route("/metrics/stream", get(metrics::stream))
         .layer(axum::middleware::from_fn_with_state(state, require_auth))
 }
 

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Download, RefreshCw, Square, X } from "lucide-react";
 import { ACTIVE, TERMINAL, api, fmtBytes, fmtDuration, fmtTime, runtimeSecs, type Job } from "../api";
+import MetricChart from "../charts/MetricChart";
+import type { Range } from "../charts/useMetrics";
 import { useTick } from "../hooks";
 import { Button, Card, Empty, ErrorBox, Select, StateBadge, Table, Td, Th, cn } from "../components/ui";
 
@@ -61,6 +63,7 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
               <tr className="border-b border-border">
                 <Th>ID</Th>
                 <Th>Name</Th>
+                <Th>Task</Th>
                 <Th>User</Th>
                 <Th>State</Th>
                 <Th>Resources</Th>
@@ -81,6 +84,15 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
                   >
                     <Td className="tabular-nums text-muted-fg">{j.id}</Td>
                     <Td className="max-w-[16rem] truncate font-medium">{j.name}</Td>
+                    <Td>
+                      {j.task_id ? (
+                        <Link className="text-xs hover:underline" to={`/tasks/${j.task_id}`} onClick={(e) => e.stopPropagation()}>
+                          task {j.task_id}
+                        </Link>
+                      ) : (
+                        <span className="text-xs text-muted-fg">–</span>
+                      )}
+                    </Td>
                     <Td>{j.user_name}</Td>
                     <Td>
                       <StateBadge state={j.state} />
@@ -114,7 +126,7 @@ export default function Jobs({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) {
+export function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) {
   const qc = useQueryClient();
   const job = useQuery({ queryKey: ["jobs", "one", id], queryFn: () => api.job(id), refetchInterval: 3000 });
   const result = useQuery({
@@ -194,6 +206,7 @@ function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) {
             )}
           </section>
         )}
+        {j && j.started_at && <JobCharts job={j} />}
         <LogView id={id} live={!terminal} />
       </div>
     </div>
@@ -251,6 +264,29 @@ function LogView({ id, live }: { id: number; live: boolean }) {
       <pre ref={box} className="max-h-[50vh] overflow-auto rounded-md border border-border bg-bg p-3 font-mono text-xs leading-relaxed">
         {text || <span className="text-muted-fg">(empty)</span>}
       </pre>
+    </section>
+  );
+}
+
+function JobCharts({ job }: { job: Job }) {
+  const start = Math.floor(Date.parse(job.started_at!) / 1000);
+  const end = job.finished_at ? Math.floor(Date.parse(job.finished_at) / 1000) : null;
+  const range: Range = useMemo(() => ({ kind: "fixed", after: start - 5, before: end ? end + 5 : null }), [start, end]);
+  const scope = job.task_id ? `task.${job.task_id}` : `job.${job.id}`;
+  const one = (k: string) => () => k;
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-medium uppercase text-muted-fg">Resources during this {job.task_id ? "step" : "job"}</h3>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <MetricChart title="CPU" keys={`${scope}.cpu`} range={range} height={110} label={one("% of a core")} points={200} />
+        <MetricChart title="Memory" keys={`${scope}.mem`} range={range} height={110} label={one("used")} points={200} />
+        {job.gpu_ids.length > 0 && (
+          <>
+            <MetricChart title="GPU utilisation" keys={`${scope}.gpu_util`} range={range} height={110} yMax={100} label={one("util")} points={200} />
+            <MetricChart title="GPU memory" keys={`${scope}.gpu_mem`} range={range} height={110} label={one("used")} points={200} />
+          </>
+        )}
+      </div>
     </section>
   );
 }

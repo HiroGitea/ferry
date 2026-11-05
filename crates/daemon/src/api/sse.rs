@@ -21,6 +21,7 @@ pub async fn events(
             Ok(ev) => {
                 let name = match &ev {
                     mlq_core::api::Event::JobUpdated { .. } => "job",
+                    mlq_core::api::Event::TaskUpdated { .. } => "task",
                     mlq_core::api::Event::JobLog { .. } => "log",
                     mlq_core::api::Event::GpusUpdated => "gpus",
                     mlq_core::api::Event::Heartbeat => "heartbeat",

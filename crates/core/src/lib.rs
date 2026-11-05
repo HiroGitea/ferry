@@ -6,9 +6,13 @@ pub mod fair_share;
 pub mod job;
 pub mod resource;
 pub mod scheduler;
+pub mod task;
 pub mod user;
 
 pub use job::{Job, JobId, JobState};
-pub use resource::{Inventory, ResourceRequest, parse_bytes, parse_duration_secs};
+pub use resource::{
+    Inventory, ResourceOverrides, ResourceRequest, parse_bytes, parse_duration_secs,
+};
 pub use scheduler::{Assignment, Decision, schedule};
+pub use task::{Snapshot, SnapshotId, Task, TaskDetail, TaskId, TaskState, TaskSummary};
 pub use user::{Quota, Role, User, UserId};

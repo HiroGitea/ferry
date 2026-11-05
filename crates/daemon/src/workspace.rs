@@ -22,6 +22,23 @@ impl Workspace {
             .join(job_id.to_string())
     }
 
+    /// Workspace of a long-lived task: `<scratch_root>/<user>/tasks/<task_id>`.
+    pub fn task_path_for(scratch_root: &Path, user: &str, task_id: i64) -> PathBuf {
+        scratch_root
+            .join(sanitize_name(user))
+            .join("tasks")
+            .join(task_id.to_string())
+    }
+
+    /// Log file of a job: `job.log` for one-shot jobs, `logs/<job_id>.log` for task steps
+    /// (several steps share one task workspace).
+    pub fn log_for(&self, job: &mlq_core::Job) -> PathBuf {
+        match job.task_id {
+            Some(_) => self.root.join("logs").join(format!("{}.log", job.id)),
+            None => self.log(),
+        }
+    }
+
     pub fn open(root: PathBuf) -> Self {
         Self { root }
     }

@@ -60,6 +60,7 @@ pub fn print_jobs(jobs: &[Job]) {
 }
 
 fn truncate(s: &str, n: usize) -> String {
+    let s = &s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -306,5 +307,241 @@ pub async fn follow_log(c: &Client, id: i64) -> anyhow::Result<Job> {
             if chunk.state.is_active() { 500 } else { 1500 },
         ))
         .await;
+    }
+}
+
+#[derive(Tabled)]
+struct TaskRow {
+    #[tabled(rename = "ID")]
+    id: i64,
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "USER")]
+    user: String,
+    #[tabled(rename = "ACTIVITY")]
+    activity: String,
+    #[tabled(rename = "STEPS")]
+    steps: u32,
+    #[tabled(rename = "SNAPSHOTS")]
+    snapshots: u32,
+    #[tabled(rename = "DEFAULTS")]
+    defaults: String,
+    #[tabled(rename = "LAST STEP")]
+    last: String,
+}
+
+pub fn print_tasks(tasks: &[mlq_core::TaskSummary]) {
+    if tasks.is_empty() {
+        println!("no tasks (create one with `mlq task create <name>`)");
+        return;
+    }
+    let rows: Vec<TaskRow> = tasks
+        .iter()
+        .map(|s| TaskRow {
+            id: s.task.id,
+            name: truncate(&s.task.name, 28),
+            user: s.task.user_name.clone(),
+            activity: s.activity.clone(),
+            steps: s.steps,
+            snapshots: s.snapshots,
+            defaults: format!(
+                "{}c/{}/{}g",
+                s.task.resources.cpus,
+                format_bytes(s.task.resources.mem_bytes),
+                s.task.resources.gpus
+            ),
+            last: s
+                .last_step
+                .as_ref()
+                .map(|j| {
+                    format!(
+                        "#{} {} {}",
+                        j.id,
+                        j.state,
+                        truncate(&j.command.join(" "), 30)
+                    )
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    println!("{}", Table::new(rows).with(Style::blank()));
+}
+
+#[derive(Tabled)]
+struct StepRow {
+    #[tabled(rename = "STEP")]
+    id: i64,
+    #[tabled(rename = "STATE")]
+    state: String,
+    #[tabled(rename = "FROM")]
+    from: String,
+    #[tabled(rename = "SAVED")]
+    saved: String,
+    #[tabled(rename = "TIME")]
+    time: String,
+    #[tabled(rename = "COMMAND")]
+    command: String,
+    #[tabled(rename = "REASON")]
+    reason: String,
+}
+
+#[derive(Tabled)]
+struct SnapRow {
+    #[tabled(rename = "SNAPSHOT")]
+    id: String,
+    #[tabled(rename = "PARENT")]
+    parent: String,
+    #[tabled(rename = "STEP")]
+    step: String,
+    #[tabled(rename = "SIZE")]
+    size: String,
+    #[tabled(rename = "IMAGE")]
+    image: String,
+    #[tabled(rename = "NOTE")]
+    note: String,
+}
+
+pub fn print_task(d: &mlq_core::TaskDetail) {
+    let t = &d.summary.task;
+    println!(
+        "task {} \"{}\"  user={}  state={}  activity={}",
+        t.id,
+        t.name,
+        t.user_name,
+        t.state.as_str(),
+        d.summary.activity
+    );
+    println!("next step starts from: {}", d.head_image);
+    println!(
+        "defaults: {} cpus, {}, {} gpus   keep-warm: {}s{}",
+        t.resources.cpus,
+        format_bytes(t.resources.mem_bytes),
+        t.resources.gpus,
+        t.keep_warm_secs,
+        match (&t.warm_container, t.warm_until) {
+            (Some(_), Some(u)) => format!("  (warm until {})", u.format("%H:%M:%S")),
+            _ => String::new(),
+        }
+    );
+    if let Some(a) = &t.archive_path {
+        println!("archive: {a}");
+    }
+    let now = chrono::Utc::now();
+    if !d.steps.is_empty() {
+        println!();
+        let rows: Vec<StepRow> = d
+            .steps
+            .iter()
+            .map(|j| StepRow {
+                id: j.id,
+                state: j.state.to_string(),
+                from: j
+                    .base_snapshot_id
+                    .map(|s| format!("snap {s}"))
+                    .unwrap_or_else(|| {
+                        if j.started_at.is_some() {
+                            "base".into()
+                        } else {
+                            String::new()
+                        }
+                    }),
+                saved: j
+                    .snapshot_id
+                    .map(|s| format!("snap {s}"))
+                    .unwrap_or_default(),
+                time: j.runtime_secs(now).map(format_duration).unwrap_or_default(),
+                command: truncate(&j.command.join(" "), 40),
+                reason: truncate(j.reason.as_deref().unwrap_or(""), 50),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::blank()));
+    }
+    if !d.snapshots.is_empty() {
+        println!();
+        let rows: Vec<SnapRow> = d
+            .snapshots
+            .iter()
+            .map(|s| SnapRow {
+                id: format!(
+                    "{}{}{}{}",
+                    s.id,
+                    if Some(s.id) == t.head_snapshot_id {
+                        " (HEAD)"
+                    } else {
+                        ""
+                    },
+                    if s.pinned { " [pinned]" } else { "" },
+                    if s.deleted { " [pruned]" } else { "" }
+                ),
+                parent: s
+                    .parent_id
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "base".into()),
+                step: s.job_id.map(|j| j.to_string()).unwrap_or_default(),
+                size: s.size_bytes.map(format_bytes).unwrap_or_default(),
+                image: s.image.clone(),
+                note: s.note.clone().unwrap_or_default(),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::blank()));
+    }
+}
+
+fn fmt_value(v: f32, unit: &str) -> String {
+    match unit {
+        "B" => format_bytes(v.max(0.0) as u64),
+        "B/s" => format!("{}/s", format_bytes(v.max(0.0) as u64)),
+        "%" => format!("{v:.1}%"),
+        _ => format!("{v:.2} {unit}"),
+    }
+}
+
+pub fn print_metrics(r: &mlq_core::api::MetricsResult) {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    println!(
+        "{} points, {}s each (tier {})",
+        r.series.first().map(|s| s.points.len()).unwrap_or(0),
+        r.step,
+        r.tier
+    );
+    let w = r.series.iter().map(|s| s.key.len()).max().unwrap_or(10);
+    for s in &r.series {
+        let vals: Vec<Option<f32>> = s.points.iter().map(|(_, v)| *v).collect();
+        let present: Vec<f32> = vals.iter().flatten().copied().collect();
+        if present.is_empty() {
+            println!("{:<w$}  (no data)", s.key);
+            continue;
+        }
+        let lo = present
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min)
+            .min(0.0);
+        let hi = present.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let spark: String = vals
+            .iter()
+            .map(|v| match v {
+                None => ' ',
+                Some(x) if hi > lo => {
+                    BARS[(((x - lo) / (hi - lo)) * 7.0).round().clamp(0.0, 7.0) as usize]
+                }
+                Some(_) => BARS[0],
+            })
+            .collect();
+        let avg = present.iter().sum::<f32>() / present.len() as f32;
+        let max = s
+            .max
+            .iter()
+            .flatten()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        println!(
+            "{:<w$}  {}  last {}  avg {}  max {}",
+            s.key,
+            spark,
+            fmt_value(*present.last().unwrap(), &s.unit),
+            fmt_value(avg, &s.unit),
+            fmt_value(max, &s.unit)
+        );
     }
 }

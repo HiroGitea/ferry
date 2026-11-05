@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { Activity, BarChart3, Cpu, ListTodo, LogOut, Moon, Sun, Users as UsersIcon } from "lucide-react";
+import { Activity, BarChart3, Boxes, Cpu, Gauge, ListTodo, LogOut, Moon, Sun, Users as UsersIcon } from "lucide-react";
 import { api, getToken, setToken } from "./api";
 import { useLiveUpdates } from "./hooks";
 import { cn } from "./components/ui";
@@ -10,6 +10,10 @@ import Usage from "./pages/Usage";
 import Jobs from "./pages/Jobs";
 import Gpus from "./pages/Gpus";
 import Users from "./pages/Users";
+import Monitor from "./pages/Monitor";
+import Tasks from "./pages/Tasks";
+import TaskDetail from "./pages/TaskDetail";
+import { ChartSyncProvider, MetricStreamProvider } from "./charts/sync";
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => {
@@ -34,7 +38,13 @@ function useTheme() {
 export default function App() {
   const [authed, setAuthed] = useState(!!getToken());
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
-  return <Shell onLogout={() => { setToken(null); setAuthed(false); }} />;
+  return (
+    <MetricStreamProvider>
+      <ChartSyncProvider>
+        <Shell onLogout={() => { setToken(null); setAuthed(false); }} />
+      </ChartSyncProvider>
+    </MetricStreamProvider>
+  );
 }
 
 function Shell({ onLogout }: { onLogout: () => void }) {
@@ -49,8 +59,10 @@ function Shell({ onLogout }: { onLogout: () => void }) {
 
   const isAdmin = me.data?.user.role === "admin";
   const nav = [
-    { to: "/usage", label: "Usage", icon: BarChart3 },
+    { to: "/monitor", label: "Monitor", icon: Gauge },
+    { to: "/tasks", label: "Tasks", icon: Boxes },
     { to: "/jobs", label: "Jobs", icon: ListTodo },
+    { to: "/usage", label: "Usage", icon: BarChart3 },
     { to: "/gpus", label: "GPUs", icon: Cpu },
     ...(isAdmin ? [{ to: "/users", label: "Users", icon: UsersIcon }] : []),
   ];
@@ -131,12 +143,15 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         </header>
         <main className="flex-1 overflow-y-auto p-4">
           <Routes>
-            <Route path="/" element={<Navigate to="/usage" replace />} />
+            <Route path="/" element={<Navigate to="/monitor" replace />} />
+            <Route path="/monitor" element={<Monitor />} />
+            <Route path="/tasks" element={<Tasks isAdmin={!!isAdmin} />} />
+            <Route path="/tasks/:id" element={<TaskDetail />} />
             <Route path="/usage" element={<Usage isAdmin={!!isAdmin} />} />
             <Route path="/jobs" element={<Jobs isAdmin={!!isAdmin} />} />
             <Route path="/gpus" element={<Gpus />} />
             {isAdmin && <Route path="/users" element={<Users />} />}
-            <Route path="*" element={<Navigate to="/usage" replace />} />
+            <Route path="*" element={<Navigate to="/monitor" replace />} />
           </Routes>
         </main>
       </div>

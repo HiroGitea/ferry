@@ -21,6 +21,7 @@ export function useLiveUpdates(): LiveState {
       qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["status"] });
       qc.invalidateQueries({ queryKey: ["usage"] });
+      qc.invalidateQueries({ queryKey: ["tasks"] });
     };
     const startPolling = () => {
       if (timer.current === null) {
@@ -43,6 +44,7 @@ export function useLiveUpdates(): LiveState {
         invalidate();
       };
       es.addEventListener("job", invalidate);
+      es.addEventListener("task", invalidate);
       es.addEventListener("gpus", () => qc.invalidateQueries({ queryKey: ["status"] }));
       es.onerror = () => {
         es?.close();

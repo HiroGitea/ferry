@@ -14,10 +14,32 @@ pub struct ResourceRequest {
 impl Default for ResourceRequest {
     fn default() -> Self {
         Self {
-            cpus: 1.0,
-            mem_bytes: 4 * 1024 * 1024 * 1024,
+            cpus: 2.0,
+            mem_bytes: 8 * 1024 * 1024 * 1024,
             gpus: 0,
         }
+    }
+}
+
+/// Per-field resource overrides; unset fields inherit from a base (the task's defaults or the
+/// global default).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ResourceOverrides {
+    pub cpus: Option<f64>,
+    pub mem_bytes: Option<u64>,
+    pub gpus: Option<u32>,
+}
+
+impl ResourceOverrides {
+    pub fn apply(&self, base: &ResourceRequest) -> ResourceRequest {
+        ResourceRequest {
+            cpus: self.cpus.unwrap_or(base.cpus),
+            mem_bytes: self.mem_bytes.unwrap_or(base.mem_bytes),
+            gpus: self.gpus.unwrap_or(base.gpus),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.cpus.is_none() && self.mem_bytes.is_none() && self.gpus.is_none()
     }
 }
 

@@ -5,8 +5,11 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 ## Layout
 - `crates/core` — domain types and the pure scheduler (`scheduler::schedule`). No IO. Unit tests live here.
 - `crates/daemon` (`mlqd`) — axum REST/SSE API (`src/api/`), SQLite via sqlx (`store.rs`, `migrations/`),
-  scheduler loop + job lifecycle (`sched.rs`), executors (`executor/container.rs` = podman/docker CLI,
-  `executor/process.rs` = dev only), GPU providers (`gpu/`), scratch retention + NAS archive (`retention.rs`).
+  scheduler loop + job lifecycle (`sched.rs`), tasks = long-lived environments with steps, snapshots
+  (`podman commit`), rollback and keep-warm (`tasks.rs`), executors (`executor/container.rs` = podman/docker CLI
+  incl. env/exec/commit, `executor/process.rs` = dev only, `executor/usage.rs` = cgroup v1/v2 + /proc counters),
+  GPU providers (`gpu/`), netdata-style metrics (`metrics/`: collector + tiered storage in `metrics.db`),
+  scratch retention + NAS archive (`retention.rs`).
 - `crates/client` — REST client used by the CLI and MCP.
 - `crates/mcp` — rmcp tool router; served over stdio (`mlq mcp serve`) and mounted at `/mcp` in the daemon.
 - `crates/cli` (`mlq`) — user CLI; `mlq daemon` runs mlqd in-process.
@@ -17,6 +20,10 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 - Wire types shared by everything are in `crates/core/src/api.rs`; mirror changes in `web/src/api.ts`.
 - Job state machine: queued/held → starting → (pulling) → running → succeeded/failed/cancelled/timeout.
   `JobState::is_active()` = occupying resources. Add new states to `store.rs` SQL `IN (...)` lists too.
+- Task steps are jobs with `task_id`; the scheduler runs them one at a time per task. Success → commit snapshot
+  (HEAD); anything else → remove the env container (rollback). Warm containers hold no scheduler resources.
+- Metric keys: `host.*`, `gpu.<i>.*`, `sched.*`, `job.<id>.*`, `task.<id>.*`; job/task keys are visible to
+  their owner and admins only (`api/metrics.rs::visible`).
 - Never mount user-chosen host paths into containers; only the job's `work/`, `out/` and configured `mounts`.
 - Results flow: `/out` on SSD → archived to `retention.archive_dir` at job end → SSD copy deleted by sweep
   only after a verified archive.
@@ -25,4 +32,5 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 ## Commands
 - `cargo test --workspace`; `cargo fmt --all`
 - `make dev-daemon` (process executor + fake GPUs), then `MLQ_TOKEN=$(cat /tmp/mlq-dev/admin.token) mlq info`
+- Snapshots need a container runtime: set `runtime = "podman"` (rootful works for local testing).
 - `make release` builds everything with the dashboard embedded.

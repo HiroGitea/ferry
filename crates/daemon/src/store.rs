@@ -6,7 +6,10 @@ use std::path::Path;
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use mlq_core::api::TokenInfo;
-use mlq_core::{Job, JobId, JobState, Quota, ResourceRequest, Role, User, UserId};
+use mlq_core::{
+    Job, JobId, JobState, Quota, ResourceRequest, Role, Snapshot, SnapshotId, Task, TaskId,
+    TaskState, User, UserId,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{FromRow, Row, SqlitePool};
 
@@ -43,6 +46,9 @@ struct JobRow {
     reason: Option<String>,
     archive_path: Option<String>,
     workspace_deleted: i64,
+    task_id: Option<i64>,
+    base_snapshot_id: Option<i64>,
+    snapshot_id: Option<i64>,
 }
 
 impl From<JobRow> for Job {
@@ -76,6 +82,9 @@ impl From<JobRow> for Job {
             reason: r.reason,
             archive_path: r.archive_path,
             workspace_deleted: r.workspace_deleted != 0,
+            task_id: r.task_id,
+            base_snapshot_id: r.base_snapshot_id,
+            snapshot_id: r.snapshot_id,
         }
     }
 }
@@ -115,6 +124,7 @@ pub struct NewJob {
     pub depends_on: Vec<JobId>,
     pub array_index: Option<u32>,
     pub time_limit_secs: Option<u64>,
+    pub task_id: Option<i64>,
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -383,8 +393,8 @@ impl Store {
     pub async fn create_job(&self, j: &NewJob) -> anyhow::Result<Job> {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO jobs (user_id, name, image, command, env, cpus, mem_bytes, gpus, state, priority, depends_on,
-             array_index, time_limit_secs, submitted_at, gpu_ids)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]') RETURNING id",
+             array_index, time_limit_secs, submitted_at, gpu_ids, task_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?) RETURNING id",
         )
         .bind(j.user_id)
         .bind(&j.name)
@@ -400,6 +410,7 @@ impl Store {
         .bind(j.array_index.map(|v| v as i64))
         .bind(j.time_limit_secs.map(|v| v as i64))
         .bind(Utc::now())
+        .bind(j.task_id)
         .fetch_one(&self.pool)
         .await?;
         self.job(id).await?.context("job vanished after insert")
@@ -497,7 +508,7 @@ impl Store {
     /// Finished jobs whose workspace has not been deleted yet, oldest first.
     pub async fn finished_jobs_with_workspace(&self) -> anyhow::Result<Vec<Job>> {
         let rows: Vec<JobRow> = sqlx::query_as(&format!(
-            "{JOB_SELECT} WHERE j.finished_at IS NOT NULL AND j.workspace_deleted = 0 AND j.workspace_path IS NOT NULL ORDER BY j.finished_at"
+            "{JOB_SELECT} WHERE j.finished_at IS NOT NULL AND j.workspace_deleted = 0 AND j.workspace_path IS NOT NULL AND j.task_id IS NULL ORDER BY j.finished_at"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -516,7 +527,7 @@ impl Store {
     /// Finished jobs whose results have not been archived yet (only meaningful when an archive dir is configured).
     pub async fn unarchived_finished_jobs(&self) -> anyhow::Result<Vec<Job>> {
         let rows: Vec<JobRow> = sqlx::query_as(&format!(
-            "{JOB_SELECT} WHERE j.finished_at IS NOT NULL AND j.archived = 0 AND j.workspace_deleted = 0 AND j.workspace_path IS NOT NULL ORDER BY j.finished_at"
+            "{JOB_SELECT} WHERE j.finished_at IS NOT NULL AND j.archived = 0 AND j.workspace_deleted = 0 AND j.workspace_path IS NOT NULL AND j.task_id IS NULL ORDER BY j.finished_at"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -645,5 +656,399 @@ impl Store {
             .into_iter()
             .map(|r| (r.get("id"), r.get("workspace_path")))
             .collect())
+    }
+}
+
+// ---------------------------------------------------------------- tasks & snapshots
+
+#[derive(FromRow)]
+struct TaskRow {
+    id: i64,
+    user_id: i64,
+    user_name: String,
+    name: String,
+    base_image: String,
+    cpus: f64,
+    mem_bytes: i64,
+    gpus: i64,
+    keep_warm_secs: i64,
+    state: String,
+    head_snapshot_id: Option<i64>,
+    workspace_path: Option<String>,
+    archive_path: Option<String>,
+    warm_container: Option<String>,
+    warm_until: Option<DateTime<Utc>>,
+    warm_gpus: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    closed_at: Option<DateTime<Utc>>,
+}
+
+impl From<TaskRow> for Task {
+    fn from(r: TaskRow) -> Self {
+        Task {
+            id: r.id,
+            user_id: r.user_id,
+            user_name: r.user_name,
+            name: r.name,
+            base_image: r.base_image,
+            resources: ResourceRequest {
+                cpus: r.cpus,
+                mem_bytes: r.mem_bytes as u64,
+                gpus: r.gpus as u32,
+            },
+            keep_warm_secs: r.keep_warm_secs.max(0) as u64,
+            state: TaskState::parse(&r.state).unwrap_or(TaskState::Closed),
+            head_snapshot_id: r.head_snapshot_id,
+            workspace_path: r.workspace_path,
+            archive_path: r.archive_path,
+            warm_container: r.warm_container,
+            warm_until: r.warm_until,
+            warm_gpus: serde_json::from_str(&r.warm_gpus).unwrap_or_default(),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            closed_at: r.closed_at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct SnapshotRow {
+    id: i64,
+    task_id: i64,
+    parent_id: Option<i64>,
+    job_id: Option<i64>,
+    image: String,
+    size_bytes: Option<i64>,
+    note: Option<String>,
+    pinned: i64,
+    deleted: i64,
+    created_at: DateTime<Utc>,
+}
+
+impl From<SnapshotRow> for Snapshot {
+    fn from(r: SnapshotRow) -> Self {
+        Snapshot {
+            id: r.id,
+            task_id: r.task_id,
+            parent_id: r.parent_id,
+            job_id: r.job_id,
+            image: r.image,
+            size_bytes: r.size_bytes.map(|v| v.max(0) as u64),
+            note: r.note,
+            pinned: r.pinned != 0,
+            deleted: r.deleted != 0,
+            created_at: r.created_at,
+        }
+    }
+}
+
+const TASK_SELECT: &str =
+    "SELECT t.*, u.name AS user_name FROM tasks t JOIN users u ON u.id = t.user_id";
+
+/// What a warm container was started with; it is reused only for an identical step setup.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WarmSpec {
+    pub image: String,
+    pub cpus: f64,
+    pub mem_bytes: u64,
+    pub gpus: Vec<u32>,
+}
+
+impl Store {
+    pub async fn create_task(
+        &self,
+        user_id: UserId,
+        name: &str,
+        base_image: &str,
+        res: &ResourceRequest,
+        keep_warm_secs: u64,
+    ) -> anyhow::Result<Task> {
+        let now = Utc::now();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO tasks (user_id, name, base_image, cpus, mem_bytes, gpus, keep_warm_secs, state, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(base_image)
+        .bind(res.cpus)
+        .bind(res.mem_bytes as i64)
+        .bind(res.gpus as i64)
+        .bind(keep_warm_secs as i64)
+        .bind(now)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        self.task(id).await?.context("task vanished after insert")
+    }
+
+    pub async fn task(&self, id: TaskId) -> anyhow::Result<Option<Task>> {
+        let row: Option<TaskRow> = sqlx::query_as(&format!("{TASK_SELECT} WHERE t.id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn list_tasks(
+        &self,
+        user_id: Option<UserId>,
+        include_closed: bool,
+    ) -> anyhow::Result<Vec<Task>> {
+        let mut sql = format!("{TASK_SELECT} WHERE t.state != 'deleted'");
+        if !include_closed {
+            sql.push_str(" AND t.state = 'open'");
+        }
+        if user_id.is_some() {
+            sql.push_str(" AND t.user_id = ?");
+        }
+        sql.push_str(" ORDER BY t.updated_at DESC");
+        let mut q = sqlx::query_as::<_, TaskRow>(&sql);
+        if let Some(u) = user_id {
+            q = q.bind(u);
+        }
+        Ok(q.fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Tasks that currently have a warm container recorded.
+    pub async fn warm_tasks(&self) -> anyhow::Result<Vec<Task>> {
+        let rows: Vec<TaskRow> =
+            sqlx::query_as(&format!("{TASK_SELECT} WHERE t.warm_container IS NOT NULL"))
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn touch_task(&self, id: TaskId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET updated_at = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_task(
+        &self,
+        id: TaskId,
+        name: Option<&str>,
+        keep_warm_secs: Option<u64>,
+        res: Option<&ResourceRequest>,
+    ) -> anyhow::Result<()> {
+        if let Some(n) = name {
+            sqlx::query("UPDATE tasks SET name = ? WHERE id = ?")
+                .bind(n)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        if let Some(k) = keep_warm_secs {
+            sqlx::query("UPDATE tasks SET keep_warm_secs = ? WHERE id = ?")
+                .bind(k as i64)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        if let Some(r) = res {
+            sqlx::query("UPDATE tasks SET cpus = ?, mem_bytes = ?, gpus = ? WHERE id = ?")
+                .bind(r.cpus)
+                .bind(r.mem_bytes as i64)
+                .bind(r.gpus as i64)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        self.touch_task(id).await
+    }
+
+    pub async fn set_task_state(&self, id: TaskId, st: TaskState) -> anyhow::Result<()> {
+        let closed = if st == TaskState::Open {
+            None
+        } else {
+            Some(Utc::now())
+        };
+        sqlx::query("UPDATE tasks SET state = ?, closed_at = ?, updated_at = ? WHERE id = ?")
+            .bind(st.as_str())
+            .bind(closed)
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_task_workspace(&self, id: TaskId, path: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET workspace_path = ? WHERE id = ?")
+            .bind(path)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_task_archive(&self, id: TaskId, path: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET archive_path = ? WHERE id = ?")
+            .bind(path)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_task_head(
+        &self,
+        id: TaskId,
+        snapshot: Option<SnapshotId>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET head_snapshot_id = ?, updated_at = ? WHERE id = ?")
+            .bind(snapshot)
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_task_warm(
+        &self,
+        id: TaskId,
+        container: &str,
+        until: DateTime<Utc>,
+        spec: &WarmSpec,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET warm_container = ?, warm_until = ?, warm_gpus = ?, warm_spec = ? WHERE id = ?")
+            .bind(container)
+            .bind(until)
+            .bind(serde_json::to_string(&spec.gpus)?)
+            .bind(serde_json::to_string(spec)?)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn task_warm_spec(&self, id: TaskId) -> anyhow::Result<Option<WarmSpec>> {
+        let s: Option<Option<String>> =
+            sqlx::query_scalar("SELECT warm_spec FROM tasks WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(s.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    pub async fn clear_task_warm(&self, id: TaskId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tasks SET warm_container = NULL, warm_until = NULL, warm_gpus = '[]', warm_spec = NULL WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn task_steps(&self, task_id: TaskId) -> anyhow::Result<Vec<Job>> {
+        let rows: Vec<JobRow> =
+            sqlx::query_as(&format!("{JOB_SELECT} WHERE j.task_id = ? ORDER BY j.id"))
+                .bind(task_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn set_job_snapshots(
+        &self,
+        job_id: JobId,
+        base: Option<SnapshotId>,
+        produced: Option<SnapshotId>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE jobs SET base_snapshot_id = ?, snapshot_id = COALESCE(?, snapshot_id) WHERE id = ?")
+            .bind(base)
+            .bind(produced)
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_job_image(&self, job_id: JobId, image: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE jobs SET image = ? WHERE id = ?")
+            .bind(image)
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_snapshot(
+        &self,
+        task_id: TaskId,
+        parent: Option<SnapshotId>,
+        job_id: Option<JobId>,
+        image: &str,
+        size: Option<u64>,
+    ) -> anyhow::Result<Snapshot> {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO snapshots (task_id, parent_id, job_id, image, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(task_id)
+        .bind(parent)
+        .bind(job_id)
+        .bind(image)
+        .bind(size.map(|v| v as i64))
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await?;
+        self.snapshot(id).await?.context("snapshot vanished")
+    }
+
+    pub async fn snapshot(&self, id: SnapshotId) -> anyhow::Result<Option<Snapshot>> {
+        let row: Option<SnapshotRow> = sqlx::query_as("SELECT * FROM snapshots WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn snapshots(&self, task_id: TaskId) -> anyhow::Result<Vec<Snapshot>> {
+        let rows: Vec<SnapshotRow> =
+            sqlx::query_as("SELECT * FROM snapshots WHERE task_id = ? ORDER BY id")
+                .bind(task_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn next_snapshot_seq(&self, task_id: TaskId) -> anyhow::Result<i64> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM snapshots WHERE task_id = ?")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n + 1)
+    }
+
+    pub async fn pin_snapshot(
+        &self,
+        id: SnapshotId,
+        pinned: bool,
+        note: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE snapshots SET pinned = ?, note = COALESCE(?, note) WHERE id = ?")
+            .bind(pinned as i64)
+            .bind(note)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn mark_snapshot_deleted(&self, id: SnapshotId) -> anyhow::Result<()> {
+        sqlx::query("UPDATE snapshots SET deleted = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }

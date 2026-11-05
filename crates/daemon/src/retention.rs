@@ -162,3 +162,51 @@ fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Copy a task's `/out` and step logs to `<archive_dir>/<user>/task-<id>/` and record it.
+/// Called after every step, so the archive always mirrors the task's results.
+pub async fn archive_task(state: &AppState, task: &mlq_core::Task) -> anyhow::Result<PathBuf> {
+    let Some(root) = state.config.retention.archive_dir.clone() else {
+        anyhow::bail!("no archive_dir configured");
+    };
+    let ws = crate::tasks::task_workspace(state, task);
+    let dest = crate::tasks::archive_dir_for(&root, task);
+    let d2 = dest.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        std::fs::create_dir_all(&d2)?;
+        if ws.out().exists() {
+            copy_dir(&ws.out(), &d2.join("out"))?;
+            // The archive may also hold files deleted from /out since; every current file must
+            // be present with the same size.
+            verify_copy(&ws.out(), &d2.join("out"))?;
+        }
+        let logs = ws.root.join("logs");
+        if logs.exists() {
+            copy_dir(&logs, &d2.join("logs"))?;
+        }
+        Ok(())
+    })
+    .await??;
+    state
+        .store
+        .set_task_archive(task.id, &dest.to_string_lossy())
+        .await?;
+    Ok(dest)
+}
+
+/// Every regular file under `src` exists under `dst` with the same size.
+fn verify_copy(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    for e in walkdir::WalkDir::new(src).min_depth(1) {
+        let e = e?;
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let rel = e.path().strip_prefix(src)?;
+        let want = e.metadata()?.len();
+        let got = std::fs::metadata(dst.join(rel)).map(|m| m.len()).ok();
+        if got != Some(want) {
+            anyhow::bail!("archive verification failed for {}", rel.display());
+        }
+    }
+    Ok(())
+}

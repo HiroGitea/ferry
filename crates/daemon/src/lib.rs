@@ -6,10 +6,12 @@ pub mod config;
 pub mod events;
 pub mod executor;
 pub mod gpu;
+pub mod metrics;
 pub mod retention;
 pub mod sched;
 pub mod state;
 pub mod store;
+pub mod tasks;
 pub mod workspace;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -40,7 +42,8 @@ pub async fn build_state(config: Config) -> anyhow::Result<Arc<AppState>> {
     store.bootstrap_admin(&config.data_dir).await?;
     let executor = executor::from_config(&config)?;
     let gpu = gpu::from_config(&config);
-    Ok(AppState::new(config, store, executor, gpu))
+    let metrics = metrics::MetricsHub::open(&config).await?;
+    Ok(AppState::new(config, store, executor, gpu, metrics))
 }
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
@@ -51,6 +54,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     sched::spawn(state.clone());
     retention::spawn(state.clone());
+    tasks::spawn_warm_reaper(state.clone());
+    metrics::collector::spawn(state.clone());
 
     let app = api::router(state.clone());
     let listener = tokio::net::TcpListener::bind(&listen)

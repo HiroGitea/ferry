@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use mlq_client::Client;
 use mlq_core::api::{ListJobsQuery, SubmitJobRequest, UsageQuery};
-use mlq_core::{JobState, ResourceRequest};
+use mlq_core::{JobState, ResourceOverrides};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ProgressNotificationParam};
 use rmcp::service::RequestContext;
@@ -27,6 +27,9 @@ Each job runs in its own container (default image: PyTorch + CUDA) with /work (i
 shared datasets are mounted read-only (usually /data). Nothing a job does affects the host. \
 Use cluster_status to see free GPUs/CPUs/memory, submit_job (dry_run=true by default) or run_job to execute, \
 get_job_log / get_result / read_artifact to inspect results. Write results to /out so they can be read back. \
+For multi-step work (install deps, preprocess, train, evaluate) create_task once and pass its task_id to run_job: \
+every successful step is snapshotted so the next one starts where it left off; a failed step rolls back. \
+get_metrics shows CPU/GPU/memory usage of a job or task. \
 Memory is given like '16G'; time limits like '2h' or '1:30:00'. Jobs queue when resources or the user's quota are exhausted.";
 
 #[derive(Clone)]
@@ -87,6 +90,9 @@ pub struct SubmitParams {
     pub depends_on: Option<Vec<i64>>,
     /// When true (the default) nothing is submitted; the response says whether/when the job would run.
     pub dry_run: Option<bool>,
+    /// Run as the next step of this task (see create_task): reuses the task's saved environment,
+    /// /work and /out. Do not set `image` then; unset resources come from the task.
+    pub task_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -107,6 +113,48 @@ pub struct RunParams {
     /// Seconds to wait for completion before returning (default 600). The job keeps running after that;
     /// use get_result with the returned job id.
     pub timeout_secs: Option<u64>,
+    /// Run as the next step of this task: starts from the task's latest snapshot (installed packages,
+    /// files outside /work are kept) and shares its /work and /out.
+    pub task_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateTaskParams {
+    /// Short name, e.g. "resnet50 sweep".
+    pub name: String,
+    /// Base image (default: the server's default image).
+    pub image: Option<String>,
+    /// Default CPU cores for steps.
+    pub cpus: Option<f64>,
+    /// Default memory for steps, e.g. "16G".
+    pub mem: Option<String>,
+    /// Default number of GPUs for steps.
+    pub gpus: Option<u32>,
+    /// Keep the environment running this many seconds after a successful step so the next step starts
+    /// instantly (default 600).
+    pub keep_warm_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TaskIdParams {
+    pub task_id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CheckoutParams {
+    pub task_id: i64,
+    /// Snapshot to continue from; omit to go back to the base image.
+    pub snapshot_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MetricsParams {
+    /// "host", "gpu", "job" or "task".
+    pub scope: String,
+    /// Job or task id (for scope job/task) or GPU index (for scope gpu; omit for all GPUs).
+    pub id: Option<i64>,
+    /// Look-back window in seconds (default 600).
+    pub since_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -158,10 +206,11 @@ fn build_request(
     priority: Option<i32>,
     depends_on: Option<Vec<i64>>,
     dry_run: bool,
+    task_id: Option<i64>,
 ) -> Result<SubmitJobRequest, String> {
     let mem_bytes = match mem {
-        Some(m) => mlq_core::parse_bytes(&m).map_err(|e| e.to_string())?,
-        None => 8 << 30,
+        Some(m) => Some(mlq_core::parse_bytes(&m).map_err(|e| e.to_string())?),
+        None => None,
     };
     let time_limit_secs = match time_limit {
         Some(t) => Some(mlq_core::parse_duration_secs(&t).map_err(|e| e.to_string())?),
@@ -172,10 +221,10 @@ fn build_request(
         image,
         command: vec!["sh".into(), "-c".into(), command.to_string()],
         env: env.unwrap_or_default(),
-        resources: ResourceRequest {
-            cpus: cpus.unwrap_or(2.0),
+        resources: ResourceOverrides {
+            cpus,
             mem_bytes,
-            gpus: gpus.unwrap_or(0),
+            gpus,
         },
         priority: priority.unwrap_or(0),
         depends_on: depends_on.unwrap_or_default(),
@@ -184,6 +233,7 @@ fn build_request(
         hold: false,
         files: files.unwrap_or_default(),
         dry_run,
+        task_id,
     })
 }
 
@@ -270,6 +320,7 @@ impl MlqServer {
             p.priority,
             p.depends_on,
             dry,
+            p.task_id,
         ) {
             Ok(r) => r,
             Err(e) => return Ok(err_result(e)),
@@ -303,6 +354,7 @@ impl MlqServer {
             None,
             None,
             false,
+            p.task_id,
         ) {
             Ok(r) => r,
             Err(e) => return Ok(err_result(e)),
@@ -517,6 +569,142 @@ impl MlqServer {
             .await
         {
             Ok(u) => json(&u),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Create a long-lived task: an environment that several steps run in one after another. Each successful step is saved as a snapshot (installed packages and files persist), a failed step rolls back to the last snapshot. Run steps with run_job/submit_job and task_id."
+    )]
+    async fn create_task(
+        &self,
+        Parameters(p): Parameters<CreateTaskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        let mem_bytes = match p.mem.as_deref().map(mlq_core::parse_bytes).transpose() {
+            Ok(m) => m,
+            Err(e) => return Ok(err_result(e)),
+        };
+        let req = mlq_core::api::CreateTaskRequest {
+            name: p.name,
+            image: p.image,
+            resources: ResourceOverrides {
+                cpus: p.cpus,
+                mem_bytes,
+                gpus: p.gpus,
+            },
+            keep_warm_secs: Some(p.keep_warm_secs.unwrap_or(600)),
+        };
+        match c.create_task(&req).await {
+            Ok(t) => json(&t),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "List your open tasks with their activity (running/queued/warm/idle), step count and latest step."
+    )]
+    async fn list_tasks(
+        &self,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        match c.tasks(&Default::default()).await {
+            Ok(t) => json(&t),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "A task's steps (with states and exit codes), snapshots, and the image the next step starts from."
+    )]
+    async fn get_task(
+        &self,
+        Parameters(p): Parameters<TaskIdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        match c.task(p.task_id).await {
+            Ok(t) => json(&t),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Make an earlier snapshot the task's HEAD (or the base image when snapshot_id is omitted); later steps continue from there."
+    )]
+    async fn checkout_snapshot(
+        &self,
+        Parameters(p): Parameters<CheckoutParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        match c.checkout(p.task_id, p.snapshot_id).await {
+            Ok(t) => json(&t),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Close a task when done: cancels queued steps, stops its warm environment and archives /out. Snapshots are kept until the task is deleted."
+    )]
+    async fn close_task(
+        &self,
+        Parameters(p): Parameters<TaskIdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        match c.close_task(p.task_id).await {
+            Ok(t) => json(&t.summary),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Resource usage time series summarised as avg/max/last: host CPU/memory/disk/network, GPU utilisation/memory/temperature/power, or a job's/task's CPU, memory, IO and GPU usage. Use it to check whether training is GPU-bound or running out of memory."
+    )]
+    async fn get_metrics(
+        &self,
+        Parameters(p): Parameters<MetricsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        let keys = match (p.scope.as_str(), p.id) {
+            ("host", _) => "host.*".to_string(),
+            ("gpu", Some(i)) => format!("gpu.{i}.*"),
+            ("gpu", None) => "gpu.*".to_string(),
+            ("job", Some(i)) => format!("job.{i}.*"),
+            ("task", Some(i)) => format!("task.{i}.*"),
+            _ => {
+                return Ok(err_result(
+                    "scope must be host, gpu, job (with id) or task (with id)",
+                ));
+            }
+        };
+        let since = p.since_secs.unwrap_or(600).clamp(10, 90 * 86400);
+        let q = mlq_core::api::MetricsQuery {
+            keys,
+            after: Some(-since),
+            before: None,
+            points: Some(60),
+        };
+        match c.metrics(&q).await {
+            Ok(r) => {
+                let summary: Vec<serde_json::Value> = r
+                    .series
+                    .iter()
+                    .map(|s| {
+                        let vals: Vec<f32> = s.points.iter().filter_map(|(_, v)| *v).collect();
+                        let max = s.max.iter().filter_map(|v| *v).fold(f32::NAN, f32::max);
+                        let avg = if vals.is_empty() { None } else { Some(vals.iter().sum::<f32>() / vals.len() as f32) };
+                        serde_json::json!({ "key": s.key, "unit": s.unit, "avg": avg, "max": (!max.is_nan()).then_some(max), "last": vals.last() })
+                    })
+                    .collect();
+                json(
+                    &serde_json::json!({ "window_secs": since, "step_secs": r.step, "series": summary }),
+                )
+            }
             Err(e) => Ok(err_result(e)),
         }
     }

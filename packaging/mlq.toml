@@ -76,6 +76,17 @@ max_scratch = "500G"
 archive_dir = "/mnt/nas/mlq-results"
 interval_secs = 3600
 
+[metrics]
+# netdata-style monitoring: 1 s collection; per-second data kept in memory for live charts and
+# written to <data_dir>/metrics.db in three tiers (per-second pages, per-minute, per-hour), each
+# point keeping min/max/sum/count so peaks survive downsampling.
+enabled = true
+interval_secs = 1
+memory_secs = 900
+tier0_days = 7      # per-second
+tier1_days = 90     # per-minute
+tier2_days = 730    # per-hour
+
 [fair_share]
 enabled = true
 # Usage halves every 7 days when ordering queued jobs of equal priority.

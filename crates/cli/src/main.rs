@@ -131,6 +131,92 @@ enum Cmd {
     Sweep,
     /// Show the authenticated user
     Whoami,
+    /// Long-lived tasks: an environment that steps run in one after another, saved after each step
+    Task {
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
+    /// Print metric time series as sparklines (e.g. `mlq metrics 'gpu.*' --since 1h`)
+    Metrics {
+        /// Comma separated keys; `prefix*` patterns allowed. Use `--list` to see keys.
+        #[arg(default_value = "host.*")]
+        keys: String,
+        #[arg(long, default_value = "10m")]
+        since: String,
+        #[arg(long, default_value = "60")]
+        points: u32,
+        /// List available keys
+        #[arg(long)]
+        list: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCmd {
+    /// Create a task; prints its id. Steps: `mlq run --task <id> -- cmd`
+    Create {
+        name: String,
+        #[arg(short = 'i', long)]
+        image: Option<String>,
+        #[arg(short = 'c', long)]
+        cpus: Option<f64>,
+        #[arg(short = 'm', long)]
+        mem: Option<String>,
+        #[arg(short = 'g', long)]
+        gpus: Option<u32>,
+        /// Keep the environment running after a successful step, e.g. 10m (0 = off)
+        #[arg(long, default_value = "10m")]
+        keep_warm: String,
+    },
+    #[command(alias = "ls")]
+    List {
+        #[arg(short, long)]
+        all: bool,
+    },
+    /// Steps and snapshots of a task
+    Show {
+        id: i64,
+    },
+    /// Continue from an earlier snapshot (or `--base` for the base image)
+    Checkout {
+        id: i64,
+        snapshot: Option<i64>,
+        #[arg(long, conflicts_with = "snapshot")]
+        base: bool,
+    },
+    /// Pin a snapshot so it is never pruned
+    Pin {
+        id: i64,
+        snapshot: i64,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        unpin: bool,
+    },
+    /// Change name, keep-warm or default resources
+    Set {
+        id: i64,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        keep_warm: Option<String>,
+        #[arg(short = 'c', long)]
+        cpus: Option<f64>,
+        #[arg(short = 'm', long)]
+        mem: Option<String>,
+        #[arg(short = 'g', long)]
+        gpus: Option<u32>,
+    },
+    Close {
+        id: i64,
+    },
+    Reopen {
+        id: i64,
+    },
+    /// Delete a closed task's snapshots and workspace (archive is kept)
+    Rm {
+        id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -184,6 +270,11 @@ fn client(cli: &Cli) -> anyhow::Result<Client> {
 
 #[tokio::main]
 async fn main() {
+    // Behave like a normal Unix tool when piped into `head` etc.: exit quietly on EPIPE.
+    // SAFETY: restoring the default SIGPIPE disposition before any I/O happens.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     if let Err(e) = real_main().await {
         eprintln!("error: {e:#}");
         std::process::exit(1);
@@ -457,6 +548,135 @@ async fn real_main() -> anyhow::Result<()> {
         Cmd::Sweep => {
             let c = client(&cli)?;
             println!("{}", serde_json::to_string_pretty(&c.sweep().await?)?);
+        }
+        Cmd::Task { cmd } => {
+            let c = client(&cli)?;
+            let secs = |s: &str| -> anyhow::Result<u64> {
+                if s == "0" {
+                    Ok(0)
+                } else {
+                    Ok(mlq_core::parse_duration_secs(s)?)
+                }
+            };
+            let detail = match cmd {
+                TaskCmd::Create {
+                    name,
+                    image,
+                    cpus,
+                    mem,
+                    gpus,
+                    keep_warm,
+                } => {
+                    let req = mlq_core::api::CreateTaskRequest {
+                        name: name.clone(),
+                        image: image.clone(),
+                        resources: mlq_core::ResourceOverrides {
+                            cpus: *cpus,
+                            mem_bytes: mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
+                            gpus: *gpus,
+                        },
+                        keep_warm_secs: Some(secs(keep_warm)?),
+                    };
+                    let d = c.create_task(&req).await?;
+                    if !cli.json {
+                        println!(
+                            "task {} created; run steps with: mlq run --task {} -- <command>",
+                            d.summary.task.id, d.summary.task.id
+                        );
+                    }
+                    Some(d)
+                }
+                TaskCmd::List { all } => {
+                    let t = c
+                        .tasks(&mlq_core::api::ListTasksQuery {
+                            all: *all,
+                            user: None,
+                        })
+                        .await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&t)?);
+                    } else {
+                        fmt::print_tasks(&t);
+                    }
+                    None
+                }
+                TaskCmd::Show { id } => Some(c.task(*id).await?),
+                TaskCmd::Checkout { id, snapshot, base } => {
+                    let sid = if *base {
+                        None
+                    } else {
+                        Some(snapshot.context("give a snapshot id or --base")?)
+                    };
+                    Some(c.checkout(*id, sid).await?)
+                }
+                TaskCmd::Pin {
+                    id,
+                    snapshot,
+                    note,
+                    unpin,
+                } => Some(c.pin_snapshot(*id, *snapshot, !unpin, note.clone()).await?),
+                TaskCmd::Set {
+                    id,
+                    name,
+                    keep_warm,
+                    cpus,
+                    mem,
+                    gpus,
+                } => {
+                    let req = mlq_core::api::UpdateTaskRequest {
+                        name: name.clone(),
+                        keep_warm_secs: keep_warm.as_deref().map(secs).transpose()?,
+                        resources: mlq_core::ResourceOverrides {
+                            cpus: *cpus,
+                            mem_bytes: mem.as_deref().map(mlq_core::parse_bytes).transpose()?,
+                            gpus: *gpus,
+                        },
+                    };
+                    Some(c.update_task(*id, &req).await?)
+                }
+                TaskCmd::Close { id } => Some(c.close_task(*id).await?),
+                TaskCmd::Reopen { id } => Some(c.reopen_task(*id).await?),
+                TaskCmd::Rm { id } => {
+                    c.delete_task(*id).await?;
+                    println!("task {id} deleted");
+                    None
+                }
+            };
+            if let Some(d) = detail {
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&d)?);
+                } else {
+                    fmt::print_task(&d);
+                }
+            }
+        }
+        Cmd::Metrics {
+            keys,
+            since,
+            points,
+            list,
+        } => {
+            let c = client(&cli)?;
+            if *list {
+                for k in c.metric_keys(None).await? {
+                    println!("{:<32} {}", k.key, k.unit);
+                }
+            } else {
+                let secs = mlq_core::parse_duration_secs(since)? as i64;
+                let r = c
+                    .metrics(&mlq_core::api::MetricsQuery {
+                        keys: keys.clone(),
+                        after: Some(-secs),
+                        before: None,
+                        points: Some(*points),
+                    })
+                    .await?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&r)?);
+                } else {
+                    fmt::print_metrics(&r);
+                }
+            }
         }
         Cmd::Whoami => {
             let c = client(&cli)?;

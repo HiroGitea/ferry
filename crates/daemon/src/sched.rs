@@ -102,8 +102,9 @@ pub async fn fair_usage(state: &AppState, active: &[Job]) -> anyhow::Result<Hash
 }
 
 async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
+    crate::tasks::recover(state).await?;
     for job in state.store.active_jobs().await? {
-        if !job.state.is_active() {
+        if !job.state.is_active() || job.task_id.is_some() {
             continue;
         }
         match &job.container_id {
@@ -154,11 +155,21 @@ pub async fn tick(state: &Arc<AppState>) -> anyhow::Result<()> {
     let inv = inventory(state);
     let quotas = state.store.all_quotas().await?;
     let fair = fair_usage(state, &active).await?;
+    let now = Utc::now();
+    let affinity: HashMap<i64, Vec<u32>> = state
+        .store
+        .warm_tasks()
+        .await?
+        .into_iter()
+        .filter(|t| t.warm_until.map(|u| u > now).unwrap_or(false) && !t.warm_gpus.is_empty())
+        .map(|t| (t.id, t.warm_gpus))
+        .collect();
     let decisions = schedule(SchedulerInput {
         inventory: &inv,
         jobs: &jobs,
         quotas: &quotas,
         fair_usage: &fair,
+        gpu_affinity: &affinity,
     });
 
     for d in decisions {
@@ -197,6 +208,21 @@ pub async fn publish_job(state: &AppState, id: JobId) {
 
 /// Prepare the workspace, pull the image if needed, start the container and watch it.
 async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
+    if let Some(tid) = job.task_id {
+        // Claim the resources now; the task module prepares/reuses the environment.
+        let ws_path = Workspace::task_path_for(&state.config.scratch_root(), &job.user_name, tid);
+        if let Err(e) = state
+            .store
+            .set_assigned(job.id, &gpu_ids, NODE_ID, &ws_path.to_string_lossy())
+            .await
+        {
+            error!(job = job.id, "db: {e:#}");
+            return;
+        }
+        publish_job(&state, job.id).await;
+        tokio::spawn(crate::tasks::run_step(state, job, gpu_ids));
+        return;
+    }
     let ws_path = Workspace::path_for(&state.config.scratch_root(), &job.user_name, job.id);
     let ws = match Workspace::create(ws_path.clone()) {
         Ok(ws) => ws,
@@ -321,14 +347,14 @@ async fn launch(state: Arc<AppState>, job: Job, gpu_ids: Vec<u32>) {
     });
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Exited(i32),
     Cancelled,
     Timeout,
     Error(String),
 }
 
-async fn wait_job(
+pub(crate) async fn wait_job(
     state: &AppState,
     job: &Job,
     handle: &str,
@@ -369,9 +395,14 @@ async fn wait_job(
     }
 }
 
-async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcome) {
-    let (st, code, reason) = match outcome {
+pub(crate) fn outcome_state(outcome: Outcome) -> (JobState, Option<i32>, Option<String>) {
+    match outcome {
         Outcome::Exited(0) => (JobState::Succeeded, Some(0), None),
+        Outcome::Exited(137) => (
+            JobState::Failed,
+            Some(137),
+            Some("exit code 137: killed (SIGKILL) — usually the memory limit was reached; request more memory".to_string()),
+        ),
         Outcome::Exited(c) => (JobState::Failed, Some(c), Some(format!("exit code {c}"))),
         Outcome::Cancelled => (
             JobState::Cancelled,
@@ -384,19 +415,30 @@ async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcom
             Some("time limit exceeded".to_string()),
         ),
         Outcome::Error(e) => (JobState::Failed, None, Some(e)),
-    };
-    let _ = state.executor.cleanup(&handle.to_string()).await;
-    if let Err(e) = state
-        .store
-        .set_finished(job_id, st, code, reason.as_deref())
-        .await
-    {
+    }
+}
+
+/// Record the final state of a job, release its cancel token and wake the scheduler.
+pub(crate) async fn finish_job(
+    state: &AppState,
+    job_id: JobId,
+    st: JobState,
+    code: Option<i32>,
+    reason: Option<&str>,
+) {
+    if let Err(e) = state.store.set_finished(job_id, st, code, reason).await {
         error!(job = job_id, "db: {e:#}");
     }
     state.remove_cancel(job_id);
     info!(job = job_id, state = %st, "job finished");
     publish_job(state, job_id).await;
     state.wake.notify_one();
+}
+
+async fn finalize(state: &AppState, job_id: JobId, handle: &str, outcome: Outcome) {
+    let (st, code, reason) = outcome_state(outcome);
+    let _ = state.executor.cleanup(&handle.to_string()).await;
+    finish_job(state, job_id, st, code, reason.as_deref()).await;
     // Copy results to the archive (NAS) right away so the SSD copy is only a cache.
     if state.config.retention.archive_dir.is_some() {
         if let Ok(Some(job)) = state.store.job(job_id).await {

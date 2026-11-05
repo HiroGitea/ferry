@@ -1,24 +1,59 @@
 //! Podman / Docker executor. Drives the CLI (`podman run -d ...`) so the daemon has no
 //! dependency on a specific API socket, and swapping runtimes is a config change.
 
+use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use mlq_core::api::ImageInfo;
-use tokio::process::Command;
+use mlq_core::{Job, ResourceRequest};
+use tokio::process::{Child, Command};
 
-use super::{Executor, Handle, RunSpec};
-use crate::config::ContainerConfig;
+use super::{EnvSpec, Executor, Handle, RunSpec, Usage};
+use crate::config::{ContainerConfig, Mount};
+use crate::workspace::Workspace;
 
 pub struct ContainerExecutor {
     binary: String,
     cfg: ContainerConfig,
+    /// exec handle -> (child `podman exec` process, environment container)
+    execs: Mutex<HashMap<String, (Option<Child>, String)>>,
+    exec_seq: AtomicU64,
+    /// container -> cgroup path (None = could not be determined)
+    cgroups: Mutex<HashMap<String, Option<String>>>,
+}
+
+/// Arguments shared by one-shot job containers and task environments.
+pub struct CommonArgs<'a> {
+    pub name: &'a str,
+    pub labels: &'a [(String, String)],
+    pub resources: &'a ResourceRequest,
+    pub gpu_ids: &'a [u32],
+    pub workspace: &'a Workspace,
+    pub mounts: &'a [Mount],
+    pub env: &'a BTreeMap<String, String>,
 }
 
 impl ContainerExecutor {
     pub fn new(binary: String, cfg: ContainerConfig) -> Self {
-        Self { binary, cfg }
+        Self {
+            binary,
+            cfg,
+            execs: Mutex::new(HashMap::new()),
+            exec_seq: AtomicU64::new(1),
+            cgroups: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn exec_env(&self, handle: &str) -> Option<String> {
+        self.execs
+            .lock()
+            .unwrap()
+            .get(handle)
+            .map(|(_, env)| env.clone())
     }
 
     fn is_docker(&self) -> bool {
@@ -60,24 +95,25 @@ impl ContainerExecutor {
         format!("mlq-{job_id}")
     }
 
-    /// Build the `run` argument list. Public for unit tests.
-    pub fn run_args(&self, spec: &RunSpec) -> Vec<String> {
-        let job = &spec.job;
+    /// `run -d ...` up to (not including) the image. Public for unit tests.
+    pub fn common_args(&self, c: &CommonArgs<'_>) -> Vec<String> {
         let mut a: Vec<String> = vec![
             "run".into(),
             "-d".into(),
             "--name".into(),
-            Self::container_name(job.id),
-            "--label".into(),
-            format!("mlq.job={}", job.id),
-            "--label".into(),
-            format!("mlq.user={}", job.user_name),
+            c.name.to_string(),
+        ];
+        for (k, v) in c.labels {
+            a.push("--label".into());
+            a.push(format!("{k}={v}"));
+        }
+        a.extend([
             "--cpus".into(),
-            format!("{}", job.resources.cpus),
+            format!("{}", c.resources.cpus),
             "--memory".into(),
-            format!("{}b", job.resources.mem_bytes),
+            format!("{}b", c.resources.mem_bytes),
             "--memory-swap".into(),
-            format!("{}b", job.resources.mem_bytes),
+            format!("{}b", c.resources.mem_bytes),
             "--pids-limit".into(),
             self.cfg.pids_limit.to_string(),
             "--shm-size".into(),
@@ -85,13 +121,13 @@ impl ContainerExecutor {
             "--network".into(),
             self.cfg.network.clone(),
             "-v".into(),
-            format!("{}:/work", spec.workspace.work().display()),
+            format!("{}:/work", c.workspace.work().display()),
             "-v".into(),
-            format!("{}:/out", spec.workspace.out().display()),
+            format!("{}:/out", c.workspace.out().display()),
             "-w".into(),
             "/work".into(),
-        ];
-        for m in &spec.mounts {
+        ]);
+        for m in c.mounts {
             let mut v = format!("{}:{}", m.host.display(), m.container);
             if m.read_only {
                 v.push_str(":ro");
@@ -107,13 +143,13 @@ impl ContainerExecutor {
             a.push("--userns".into());
             a.push(ns.clone());
         }
-        if !spec.gpu_ids.is_empty() {
+        if !c.gpu_ids.is_empty() {
             match self.gpu_style() {
                 "docker" => {
                     a.push("--gpus".into());
                     a.push(format!(
                         "\"device={}\"",
-                        spec.gpu_ids
+                        c.gpu_ids
                             .iter()
                             .map(|g| g.to_string())
                             .collect::<Vec<_>>()
@@ -121,21 +157,109 @@ impl ContainerExecutor {
                     ));
                 }
                 _ => {
-                    for g in &spec.gpu_ids {
+                    for g in c.gpu_ids {
                         a.push("--device".into());
                         a.push(format!("nvidia.com/gpu={g}"));
                     }
                 }
             }
         }
-        for (k, v) in &spec.env {
+        for (k, v) in c.env {
             a.push("-e".into());
             a.push(format!("{k}={v}"));
         }
         a.extend(self.cfg.extra_args.iter().cloned());
+        a
+    }
+
+    /// Build the `run` argument list for a one-shot job. Public for unit tests.
+    pub fn run_args(&self, spec: &RunSpec) -> Vec<String> {
+        let job = &spec.job;
+        let labels = vec![
+            ("mlq.job".to_string(), job.id.to_string()),
+            ("mlq.user".to_string(), job.user_name.clone()),
+        ];
+        let name = Self::container_name(job.id);
+        let mut a = self.common_args(&CommonArgs {
+            name: &name,
+            labels: &labels,
+            resources: &job.resources,
+            gpu_ids: &spec.gpu_ids,
+            workspace: &spec.workspace,
+            mounts: &spec.mounts,
+            env: &spec.env,
+        });
         a.push(job.image.clone());
         a.extend(job.command.iter().cloned());
         a
+    }
+
+    /// Build the `run` argument list for an idle task environment. Public for unit tests.
+    pub fn env_args(&self, spec: &EnvSpec) -> Vec<String> {
+        let mut a = self.common_args(&CommonArgs {
+            name: &spec.name,
+            labels: &spec.labels,
+            resources: &spec.resources,
+            gpu_ids: &spec.gpu_ids,
+            workspace: &spec.workspace,
+            mounts: &spec.mounts,
+            env: &spec.env,
+        });
+        // A tiny init reaps orphans; the environment idles until steps are exec'd into it.
+        a.insert(2, "--init".into());
+        a.push(spec.image.clone());
+        a.extend(["sleep".to_string(), "infinity".to_string()]);
+        a
+    }
+
+    /// `exec` arguments for one step. Public for unit tests.
+    pub fn exec_args(&self, env: &str, job: &Job, vars: &BTreeMap<String, String>) -> Vec<String> {
+        let mut a: Vec<String> = vec!["exec".into(), "-w".into(), "/work".into()];
+        for (k, v) in vars {
+            a.push("-e".into());
+            a.push(format!("{k}={v}"));
+        }
+        a.push(env.to_string());
+        a.extend(job.command.iter().cloned());
+        a
+    }
+
+    async fn cgroup_path(&self, container: &str) -> Option<String> {
+        if let Some(p) = self.cgroups.lock().unwrap().get(container) {
+            return p.clone();
+        }
+        let path = if self.is_docker() {
+            let id = self
+                .run_cli(&[
+                    "inspect".into(),
+                    "--format".into(),
+                    "{{.Id}}".into(),
+                    container.to_string(),
+                ])
+                .await
+                .ok()?;
+            [
+                format!("/system.slice/docker-{id}.scope"),
+                format!("/docker/{id}"),
+            ]
+            .into_iter()
+            .find(|p| super::usage::cgroup_usage(p).is_some())
+        } else {
+            self.run_cli(&[
+                "inspect".into(),
+                "--format".into(),
+                "{{.State.CgroupPath}}".into(),
+                container.to_string(),
+            ])
+            .await
+            .ok()
+            .filter(|p| !p.is_empty())
+        };
+        self.cgroups
+            .lock()
+            .unwrap()
+            .insert(container.to_string(), path.clone());
+        path
     }
 }
 
@@ -143,6 +267,10 @@ impl ContainerExecutor {
 impl Executor for ContainerExecutor {
     fn name(&self) -> &str {
         &self.binary
+    }
+
+    fn supports_snapshots(&self) -> bool {
+        true
     }
 
     async fn image_present(&self, image: &str) -> anyhow::Result<bool> {
@@ -245,6 +373,20 @@ impl Executor for ContainerExecutor {
     }
 
     async fn wait(&self, handle: &Handle) -> anyhow::Result<i32> {
+        if handle.starts_with("exec:") {
+            let child = self
+                .execs
+                .lock()
+                .unwrap()
+                .get_mut(handle)
+                .and_then(|(c, _)| c.take());
+            let Some(mut child) = child else {
+                bail!("unknown exec handle {handle}")
+            };
+            let status = child.wait().await?;
+            self.execs.lock().unwrap().remove(handle);
+            return Ok(status.code().unwrap_or(-1));
+        }
         let out = self.run_cli(&["wait".into(), handle.clone()]).await?;
         out.lines()
             .last()
@@ -255,13 +397,20 @@ impl Executor for ContainerExecutor {
     }
 
     async fn kill(&self, handle: &Handle) -> anyhow::Result<()> {
+        // Killing a step stops its environment: uncommitted changes are discarded, i.e. the
+        // task rolls back to its last snapshot.
+        let target = self.exec_env(handle).unwrap_or_else(|| handle.clone());
         let _ = self
-            .run_cli(&["stop".into(), "-t".into(), "10".into(), handle.clone()])
+            .run_cli(&["stop".into(), "-t".into(), "10".into(), target])
             .await;
         Ok(())
     }
 
     async fn cleanup(&self, handle: &Handle) -> anyhow::Result<()> {
+        if handle.starts_with("exec:") {
+            self.execs.lock().unwrap().remove(handle);
+            return Ok(());
+        }
         let _ = self
             .run_cli(&["rm".into(), "-f".into(), handle.clone()])
             .await;
@@ -269,6 +418,10 @@ impl Executor for ContainerExecutor {
     }
 
     async fn is_alive(&self, handle: &Handle) -> anyhow::Result<bool> {
+        if handle.starts_with("exec:") {
+            // exec sessions cannot be re-attached after a daemon restart
+            return Ok(self.execs.lock().unwrap().contains_key(handle));
+        }
         let out = self
             .run_cli(&[
                 "inspect".into(),
@@ -278,6 +431,104 @@ impl Executor for ContainerExecutor {
             ])
             .await;
         Ok(matches!(out.as_deref(), Ok("running") | Ok("created")))
+    }
+
+    async fn start_env(&self, spec: &EnvSpec) -> anyhow::Result<Handle> {
+        let _ = Command::new(&self.binary)
+            .args(["rm", "-f", &spec.name])
+            .stdin(Stdio::null())
+            .output()
+            .await;
+        let args = self.env_args(spec);
+        self.run_cli(&args).await
+    }
+
+    async fn exec(
+        &self,
+        env: &Handle,
+        job: &Job,
+        _workspace: &Workspace,
+        vars: &BTreeMap<String, String>,
+        log_path: &std::path::Path,
+    ) -> anyhow::Result<Handle> {
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        let log_err = log.try_clone()?;
+        let child = Command::new(&self.binary)
+            .args(self.exec_args(env, job, vars))
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err))
+            .kill_on_drop(true)
+            .spawn()
+            .context("starting exec")?;
+        let handle = format!(
+            "exec:{}:{}",
+            job.id,
+            self.exec_seq.fetch_add(1, Ordering::Relaxed)
+        );
+        self.execs
+            .lock()
+            .unwrap()
+            .insert(handle.clone(), (Some(child), env.clone()));
+        Ok(handle)
+    }
+
+    async fn commit(&self, env: &Handle, image: &str) -> anyhow::Result<Option<u64>> {
+        self.run_cli(&["commit".into(), "-q".into(), env.clone(), image.to_string()])
+            .await?;
+        let size = self
+            .run_cli(&[
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Size}}".into(),
+                image.to_string(),
+            ])
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        Ok(size)
+    }
+
+    async fn remove_image(&self, image: &str) -> anyhow::Result<()> {
+        self.run_cli(&["rmi".into(), "-f".into(), image.to_string()])
+            .await
+            .map(|_| ())
+    }
+
+    async fn env_idle(&self, env: &Handle) -> anyhow::Result<bool> {
+        // init + `sleep infinity` are the only processes of an idle environment.
+        let fmt: Vec<String> = if self.is_docker() {
+            vec!["-eo".into(), "pid".into()]
+        } else {
+            vec!["pid".into()]
+        };
+        let mut args = vec!["top".to_string(), env.clone()];
+        args.extend(fmt);
+        let out = self.run_cli(&args).await?;
+        let procs = out.lines().skip(1).filter(|l| !l.trim().is_empty()).count();
+        Ok(procs <= 2)
+    }
+
+    async fn remove_env(&self, env: &Handle) -> anyhow::Result<()> {
+        let _ = self
+            .run_cli(&["stop".into(), "-t".into(), "5".into(), env.clone()])
+            .await;
+        let _ = self.run_cli(&["rm".into(), "-f".into(), env.clone()]).await;
+        self.cgroups.lock().unwrap().remove(env);
+        Ok(())
+    }
+
+    async fn usage(&self, handle: &Handle) -> Option<Usage> {
+        let container = self.exec_env(handle).unwrap_or_else(|| handle.clone());
+        let path = self.cgroup_path(&container).await?;
+        tokio::task::spawn_blocking(move || super::usage::cgroup_usage(&path))
+            .await
+            .ok()
+            .flatten()
     }
 }
 
@@ -320,6 +571,9 @@ mod tests {
             reason: None,
             archive_path: None,
             workspace_deleted: false,
+            task_id: None,
+            base_snapshot_id: None,
+            snapshot_id: None,
         };
         let spec = RunSpec {
             job,
@@ -346,5 +600,34 @@ mod tests {
         assert!(s.contains("--device nvidia.com/gpu=1 --device nvidia.com/gpu=3"));
         assert!(s.ends_with("docker.io/library/alpine:3 sh -c echo hi"));
         assert!(!s.contains("--gpus"));
+
+        let env = EnvSpec {
+            name: "mlq-task-3".into(),
+            labels: vec![("mlq.task".into(), "3".into())],
+            image: "localhost/mlq-task-3:2".into(),
+            user_name: "alice".into(),
+            resources: ResourceRequest {
+                cpus: 1.5,
+                mem_bytes: 512 << 20,
+                gpus: 1,
+            },
+            gpu_ids: vec![0],
+            workspace: Workspace::open("/scratch/alice/tasks/3".into()),
+            mounts: vec![],
+            env: Default::default(),
+        };
+        let e = ex.env_args(&env).join(" ");
+        assert!(e.starts_with("run -d --init --name mlq-task-3 --label mlq.task=3 --cpus 1.5"));
+        assert!(e.ends_with("localhost/mlq-task-3:2 sleep infinity"));
+        assert!(e.contains("--device nvidia.com/gpu=0"));
+        let mut job2 = spec.job.clone();
+        job2.command = vec!["python".into(), "train.py".into()];
+        let vars: BTreeMap<String, String> = [("MLQ_JOB_ID".to_string(), "9".to_string())]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            ex.exec_args("abc123", &job2, &vars).join(" "),
+            "exec -w /work -e MLQ_JOB_ID=9 abc123 python train.py"
+        );
     }
 }

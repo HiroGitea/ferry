@@ -21,6 +21,9 @@ pub struct AppState {
     pub wake: Notify,
     /// Cancellation tokens of running jobs.
     pub cancels: Mutex<HashMap<JobId, CancellationToken>>,
+    /// One lock per task: serialises steps, checkout, close and warm-expiry of a task.
+    pub task_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+    pub metrics: Arc<crate::metrics::MetricsHub>,
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -30,6 +33,7 @@ impl AppState {
         store: Store,
         executor: Arc<dyn Executor>,
         gpu: Arc<dyn GpuProvider>,
+        metrics: Arc<crate::metrics::MetricsHub>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -39,6 +43,8 @@ impl AppState {
             gpu,
             wake: Notify::new(),
             cancels: Mutex::new(HashMap::new()),
+            task_locks: Mutex::new(HashMap::new()),
+            metrics,
             started_at: chrono::Utc::now(),
         })
     }
@@ -57,6 +63,15 @@ impl AppState {
             }
             None => false,
         }
+    }
+
+    pub fn task_lock(&self, task_id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        self.task_locks
+            .lock()
+            .unwrap()
+            .entry(task_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn remove_cancel(&self, id: JobId) {
