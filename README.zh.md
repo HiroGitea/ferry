@@ -194,7 +194,7 @@ cd web && pnpm dev       # 面板开发服务器，API 走代理
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-带后缀的 tag（`v0.2.0-rc.1`）发布为预发布版。本地用 `make dist` 可以打出同样的压缩包。
+不想推 tag 的话，也可以在 *Actions → Release → Run workflow* 手动运行，它会自己把当前提交打成 `v<版本号>`。带后缀的版本（`0.2.0-rc.1`）发布为预发布版。本地用 `make dist` 可以打出同样的压缩包。
 
 目录：`crates/core`（类型、纯函数调度器）、`crates/daemon`（`ferryd`：API、任务、执行器、节点、监控、存档）、`crates/client`、`crates/mcp`、`crates/cli`（`ferry`）、`web/`（React 面板）、`packaging/`、`images/`。约定见 `CLAUDE.md`。
 

@@ -221,7 +221,8 @@ build on every push; bumping `version` in `Cargo.toml` and pushing a matching ta
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-Tags with a suffix (`v0.2.0-rc.1`) become pre-releases. `make dist` builds the same tarball locally.
+Instead of pushing a tag you can also run *Actions → Release → Run workflow*, which tags the
+commit as `v<version>` itself. Versions with a suffix (`0.2.0-rc.1`) become pre-releases. `make dist` builds the same tarball locally.
 
 Layout: `crates/core` (types, pure scheduler), `crates/daemon` (`ferryd`: API, tasks, executors,
 nodes, metrics, archives), `crates/client`, `crates/mcp`, `crates/cli` (`ferry`), `web/`

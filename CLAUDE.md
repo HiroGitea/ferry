@@ -36,5 +36,5 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 - Snapshots need a container runtime: set `runtime = "podman"` (rootful works for local testing).
 - `make release` builds everything with the dashboard embedded; `make dist` packs it like a release asset.
 - `make lint` = what CI enforces (`cargo fmt --check`, `clippy -D warnings`).
-- Release: bump `version` in `Cargo.toml` (and `web/package.json`, `packaging/PKGBUILD`), push tag `vX.Y.Z`;
+- Release: bump `version` in `Cargo.toml` (and `web/package.json`, `packaging/PKGBUILD`), push tag `vX.Y.Z` (or run the Release workflow manually);
   `.github/workflows/release.yml` cross-builds x86_64/aarch64 (cargo-zigbuild, glibc 2.28) and publishes.

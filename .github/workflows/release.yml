@@ -1,10 +1,13 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching `version` in Cargo.toml) to publish a release.
-# Tags with a suffix (v0.2.0-rc.1) become pre-releases.
+# Two ways to publish, both using `version` from Cargo.toml:
+#  - push a tag like v0.2.0 (must match Cargo.toml), or
+#  - Actions → Release → Run workflow on a branch: tags that commit as v<version> itself.
+# Versions with a suffix (0.2.0-rc.1) become pre-releases.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,18 +20,26 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Tag must match Cargo.toml
+        name: Resolve version and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ "$tag" != "$cargo_version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+              exit 1
+            fi
+          elif gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release v$version already exists; bump version in Cargo.toml"
             exit 1
           fi
-          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
@@ -103,13 +114,15 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
         run: |
           cd dist
           cat *.sha256 > SHA256SUMS && rm *.sha256
-          flags=(--generate-notes --verify-tag --title "ferry $GITHUB_REF_NAME")
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" * --clobber
+          # A manual run creates the tag on the commit it built.
+          flags=(--generate-notes --title "ferry $TAG" --target "$GITHUB_SHA")
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" * --clobber
           else
-            gh release create "$GITHUB_REF_NAME" * "${flags[@]}"
+            gh release create "$TAG" * "${flags[@]}"
           fi
