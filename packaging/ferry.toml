@@ -111,3 +111,9 @@ local_node = true
 node_token = ""
 # An agent silent for this long is marked offline; its queued jobs wait for it.
 node_timeout_secs = 30
+
+[notify]
+# Users set their own webhook / Telegram chat id (dashboard → Settings, or `ferry notify set`).
+# telegram_bot_token = "123456:ABC..."     # from @BotFather; enables Telegram for everyone
+# telegram_api = "https://api.telegram.org" # or a reverse proxy if Telegram is blocked
+# public_url = "http://gpu1.tailnet:7070"   # dashboard links in messages

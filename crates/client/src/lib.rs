@@ -8,9 +8,9 @@ use ferry_core::api::{
     CreateInviteRequest, CreateTaskRequest, CreateTokenRequest, CreateUserRequest, ErrorBody,
     Event, ExportTaskRequest, ExportTaskResponse, GpuInfo, ImageInfo, ImportArchiveRequest,
     InviteCreated, InviteInfo, InvitePreview, JobResult, ListJobsQuery, ListTasksQuery, LogChunk,
-    Me, MetricInfo, MetricsQuery, MetricsResult, PinSnapshotRequest, PullImageRequest,
-    RegisterRequest, SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo,
-    UpdateTaskRequest, UsageQuery, UserUsage,
+    Me, MetricInfo, MetricsQuery, MetricsResult, NotifyInfo, NotifySettings, PinSnapshotRequest,
+    PullImageRequest, RegisterRequest, SubmitJobRequest, SubmitJobResponse, TokenCreated,
+    TokenInfo, UpdateTaskRequest, UsageQuery, UserUsage,
 };
 use ferry_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
 use futures::StreamExt;
@@ -274,6 +274,15 @@ impl Client {
     pub async fn delete_token(&self, id: i64) -> Result<serde_json::Value, ClientError> {
         self.send(self.req(Method::DELETE, &format!("/tokens/{id}")))
             .await
+    }
+    pub async fn notify_settings(&self) -> Result<NotifyInfo, ClientError> {
+        self.send(self.req(Method::GET, "/me/notify")).await
+    }
+    pub async fn set_notify_settings(&self, s: &NotifySettings) -> Result<NotifyInfo, ClientError> {
+        self.send(self.req(Method::PUT, "/me/notify").json(s)).await
+    }
+    pub async fn test_notify(&self) -> Result<serde_json::Value, ClientError> {
+        self.send(self.req(Method::POST, "/me/notify/test")).await
     }
     pub async fn invites(&self) -> Result<Vec<InviteInfo>, ClientError> {
         self.send(self.req(Method::GET, "/invites")).await

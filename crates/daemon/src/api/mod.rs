@@ -5,6 +5,7 @@ pub mod info;
 pub mod jobs;
 pub mod metrics;
 pub mod nodes;
+pub mod notify;
 pub mod sse;
 pub mod tasks;
 pub mod web;
@@ -76,6 +77,8 @@ pub fn loopback_addr(listen: &str) -> String {
 pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/me", get(info::me))
+        .route("/me/notify", get(notify::get).put(notify::put))
+        .route("/me/notify/test", post(notify::test))
         .route("/status", get(info::status))
         .route("/gpus", get(info::gpus))
         .route("/images", get(info::images))

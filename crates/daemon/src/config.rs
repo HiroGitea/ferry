@@ -39,7 +39,21 @@ pub struct Config {
     pub agent: AgentConfig,
     pub fair_share: FairShareConfig,
     pub metrics: crate::metrics::MetricsConfig,
+    pub notify: NotifyConfig,
     pub log_level: String,
+}
+
+/// Server side of notifications; users choose their own channels.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotifyConfig {
+    /// Bot token from @BotFather. Users put their chat id in their settings.
+    pub telegram_bot_token: Option<String>,
+    /// Telegram API base, e.g. a reverse proxy where api.telegram.org is not reachable.
+    /// `HTTPS_PROXY` in the service environment works too.
+    pub telegram_api: Option<String>,
+    /// Dashboard URL used for links in messages, e.g. "http://gpu1.tailnet:7070".
+    pub public_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +219,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             fair_share: FairShareConfig::default(),
             metrics: crate::metrics::MetricsConfig::default(),
+            notify: NotifyConfig::default(),
             log_level: "info".into(),
         }
     }

@@ -27,6 +27,7 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
   their owner and admins only (`api/metrics.rs::visible`).
 - Auth: every `/api/v1` route needs a bearer token except `GET /api/v1/invite` and `POST /api/v1/register`
   (invite codes, `api/admin.rs`); registration is one transaction in `store.rs::register_with_invite`.
+- Notifications: `notify.rs` listens for terminal `JobUpdated` events; other code calls `notify::send` (always delivered).
 - Never mount user-chosen host paths into containers; only the job's `work/`, `out/` and configured `mounts`.
 - Results flow: `/out` on SSD → archived to `retention.archive_dir` at job end → SSD copy deleted by sweep
   only after a verified archive.

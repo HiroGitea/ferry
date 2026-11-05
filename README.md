@@ -139,6 +139,19 @@ users log in with a token:
 ferry login --url http://server:7070 --token ferry_...
 ```
 
+### Notifications
+
+Each user picks a webhook (ferry JSON, or the Feishu / DingTalk / WeCom / Slack bot formats) and/or a
+Telegram chat in dashboard → Settings. Admins enable Telegram with `notify.telegram_bot_token`.
+
+```bash
+ferry notify set --webhook https://open.feishu.cn/open-apis/bot/v2/hook/... --format feishu --task-steps true
+```
+
+```bash
+ferry notify test
+```
+
 ### Jobs
 
 ```bash

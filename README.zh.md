@@ -114,6 +114,18 @@ ferry invite list ; ferry invite rm <id> ; ferry token create --name laptop
 ferry login --url http://server:7070 --token ferry_...
 ```
 
+### 通知
+
+每个用户在面板 Settings 里填自己的 Webhook（ferry JSON，或飞书 / 钉钉 / 企业微信 / Slack 机器人格式）和/或 Telegram chat id。管理员在配置里设 `notify.telegram_bot_token` 启用 Telegram。
+
+```bash
+ferry notify set --webhook https://open.feishu.cn/open-apis/bot/v2/hook/... --format feishu --task-steps true
+```
+
+```bash
+ferry notify test
+```
+
 ### 作业
 
 ```bash

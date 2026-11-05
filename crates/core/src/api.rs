@@ -215,6 +215,87 @@ pub struct TokenCreated {
     pub token: String,
 }
 
+/// How a webhook body is shaped. `json` is ferry's own payload; the others match the chat bots'
+/// incoming-webhook formats so the URL can point straight at them.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookFormat {
+    #[default]
+    Json,
+    Slack,
+    Feishu,
+    Dingtalk,
+    Wecom,
+}
+
+impl WebhookFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WebhookFormat::Json => "json",
+            WebhookFormat::Slack => "slack",
+            WebhookFormat::Feishu => "feishu",
+            WebhookFormat::Dingtalk => "dingtalk",
+            WebhookFormat::Wecom => "wecom",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "json" => WebhookFormat::Json,
+            "slack" => WebhookFormat::Slack,
+            "feishu" | "lark" => WebhookFormat::Feishu,
+            "dingtalk" => WebhookFormat::Dingtalk,
+            "wecom" => WebhookFormat::Wecom,
+            _ => return None,
+        })
+    }
+}
+
+/// A user's notification channels and which events they want.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotifySettings {
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub webhook_format: WebhookFormat,
+    #[serde(default)]
+    pub telegram_chat_id: Option<String>,
+    /// Job (or task step, see `task_steps`) succeeded.
+    #[serde(default = "yes")]
+    pub on_success: bool,
+    /// Failed or timed out. Idle warnings and admin actions are always sent.
+    #[serde(default = "yes")]
+    pub on_failure: bool,
+    /// Also notify for every task step, not only plain jobs.
+    #[serde(default)]
+    pub task_steps: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        Self {
+            webhook_url: None,
+            webhook_format: WebhookFormat::Json,
+            telegram_chat_id: None,
+            on_success: true,
+            on_failure: true,
+            task_steps: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotifyInfo {
+    pub settings: NotifySettings,
+    /// The server has a Telegram bot configured.
+    pub telegram_available: bool,
+}
+
 /// Admin: create an invite link.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CreateInviteRequest {

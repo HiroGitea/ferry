@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use ferry_core::api::{InviteInfo, InvitePreview, TokenInfo};
+use ferry_core::api::{InviteInfo, InvitePreview, NotifySettings, TokenInfo, WebhookFormat};
 use ferry_core::{
     Job, JobId, JobState, Quota, ResourceRequest, Role, Snapshot, SnapshotId, Task, TaskId,
     TaskState, User, UserId,
@@ -513,6 +513,52 @@ impl Store {
             created_at: now,
         };
         Ok(Ok((user, token, token_id)))
+    }
+
+    // ---- notification settings ----
+
+    pub async fn notify_settings(&self, user_id: UserId) -> anyhow::Result<NotifySettings> {
+        let row = sqlx::query("SELECT * FROM notify_settings WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(match row {
+            Some(r) => NotifySettings {
+                webhook_url: r.get("webhook_url"),
+                webhook_format: WebhookFormat::parse(r.get("webhook_format")).unwrap_or_default(),
+                telegram_chat_id: r.get("telegram_chat_id"),
+                on_success: r.get::<i64, _>("on_success") != 0,
+                on_failure: r.get::<i64, _>("on_failure") != 0,
+                task_steps: r.get::<i64, _>("task_steps") != 0,
+            },
+            None => NotifySettings::default(),
+        })
+    }
+
+    pub async fn set_notify_settings(
+        &self,
+        user_id: UserId,
+        n: &NotifySettings,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO notify_settings (user_id, webhook_url, webhook_format, telegram_chat_id, on_success, on_failure, task_steps, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET webhook_url = excluded.webhook_url,
+               webhook_format = excluded.webhook_format, telegram_chat_id = excluded.telegram_chat_id,
+               on_success = excluded.on_success, on_failure = excluded.on_failure,
+               task_steps = excluded.task_steps, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(&n.webhook_url)
+        .bind(n.webhook_format.as_str())
+        .bind(&n.telegram_chat_id)
+        .bind(n.on_success as i64)
+        .bind(n.on_failure as i64)
+        .bind(n.task_steps as i64)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     // ---- quotas ----

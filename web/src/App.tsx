@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { Activity, BarChart3, Boxes, Cpu, Gauge, ListTodo, LogOut, Moon, Sun, Users as UsersIcon } from "lucide-react";
+import { Activity, BarChart3, Boxes, Cpu, Gauge, ListTodo, LogOut, Moon, Settings as SettingsIcon, Sun, Users as UsersIcon } from "lucide-react";
 import { api, getToken, setToken } from "./api";
 import { useLiveUpdates } from "./hooks";
 import { cn } from "./components/ui";
@@ -11,6 +11,7 @@ import Usage from "./pages/Usage";
 import Jobs from "./pages/Jobs";
 import Gpus from "./pages/Gpus";
 import Users from "./pages/Users";
+import Settings from "./pages/Settings";
 import Monitor from "./pages/Monitor";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
@@ -67,6 +68,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     { to: "/usage", label: "Usage", icon: BarChart3 },
     { to: "/gpus", label: "Nodes & GPUs", icon: Cpu },
     ...(isAdmin ? [{ to: "/users", label: "Users", icon: UsersIcon }] : []),
+    { to: "/settings", label: "Settings", icon: SettingsIcon },
   ];
   const s = status.data;
 
@@ -154,6 +156,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Route path="/gpus" element={<Gpus />} />
             {/* Wait for /me before deciding, so a reload on /users does not bounce admins away. */}
             <Route path="/users" element={me.isLoading ? null : isAdmin ? <Users /> : <Navigate to="/monitor" replace />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/monitor" replace />} />
           </Routes>
         </main>

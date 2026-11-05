@@ -47,6 +47,11 @@ enum Cmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Your notification channels (webhook, Telegram)
+    Notify {
+        #[command(subcommand)]
+        cmd: Option<NotifyCmd>,
+    },
     /// Invite links for new users (admin)
     Invite {
         #[command(subcommand)]
@@ -305,6 +310,35 @@ enum UserCmd {
 }
 
 #[derive(Subcommand)]
+enum NotifyCmd {
+    /// Show settings (default)
+    Show,
+    /// Change settings; only the flags you pass change
+    Set {
+        /// Webhook URL ("" to remove)
+        #[arg(long)]
+        webhook: Option<String>,
+        /// Body format: json, slack, feishu, dingtalk, wecom
+        #[arg(long)]
+        format: Option<String>,
+        /// Telegram chat id ("" to remove); message the server's bot, then get your id from @userinfobot
+        #[arg(long)]
+        telegram: Option<String>,
+        /// Notify when jobs succeed
+        #[arg(long)]
+        on_success: Option<bool>,
+        /// Notify when jobs fail or time out
+        #[arg(long)]
+        on_failure: Option<bool>,
+        /// Also notify for every task step
+        #[arg(long)]
+        task_steps: Option<bool>,
+    },
+    /// Send a test message
+    Test,
+}
+
+#[derive(Subcommand)]
 enum InviteCmd {
     List,
     /// Create an invite link; prints it once
@@ -453,6 +487,73 @@ async fn real_main() -> anyhow::Result<()> {
                 "token (shown once; also use it for the dashboard at {url} and for Claude):\n{}",
                 t.token
             );
+        }
+        Cmd::Notify { cmd } => {
+            let c = client(&cli)?;
+            let info = match cmd.as_ref().unwrap_or(&NotifyCmd::Show) {
+                NotifyCmd::Show => c.notify_settings().await?,
+                NotifyCmd::Set {
+                    webhook,
+                    format,
+                    telegram,
+                    on_success,
+                    on_failure,
+                    task_steps,
+                } => {
+                    let mut s = c.notify_settings().await?.settings;
+                    if let Some(w) = webhook {
+                        s.webhook_url = Some(w.clone()).filter(|w| !w.is_empty());
+                    }
+                    if let Some(f) = format {
+                        s.webhook_format = ferry_core::api::WebhookFormat::parse(f).context(
+                            "format must be one of json, slack, feishu, dingtalk, wecom",
+                        )?;
+                    }
+                    if let Some(t) = telegram {
+                        s.telegram_chat_id = Some(t.clone()).filter(|t| !t.is_empty());
+                    }
+                    if let Some(v) = on_success {
+                        s.on_success = *v;
+                    }
+                    if let Some(v) = on_failure {
+                        s.on_failure = *v;
+                    }
+                    if let Some(v) = task_steps {
+                        s.task_steps = *v;
+                    }
+                    c.set_notify_settings(&s).await?
+                }
+                NotifyCmd::Test => {
+                    c.test_notify().await?;
+                    println!("test notification sent");
+                    return Ok(());
+                }
+            };
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            } else {
+                let s = &info.settings;
+                println!(
+                    "webhook:    {}",
+                    s.webhook_url
+                        .as_deref()
+                        .map(|u| format!("{u} ({})", s.webhook_format.as_str()))
+                        .unwrap_or_else(|| "-".into())
+                );
+                println!(
+                    "telegram:   {}{}",
+                    s.telegram_chat_id.as_deref().unwrap_or("-"),
+                    if info.telegram_available {
+                        ""
+                    } else {
+                        "  (no bot on this server)"
+                    }
+                );
+                println!(
+                    "notify on:  success={} failure={} task_steps={}",
+                    s.on_success, s.on_failure, s.task_steps
+                );
+            }
         }
         Cmd::Invite { cmd } => {
             let c = client(&cli)?;

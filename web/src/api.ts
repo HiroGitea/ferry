@@ -245,6 +245,30 @@ export interface TokenCreated {
   token: string;
 }
 
+export interface TokenInfo {
+  id: number;
+  user_id: number;
+  name: string | null;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export type WebhookFormat = "json" | "slack" | "feishu" | "dingtalk" | "wecom";
+
+export interface NotifySettings {
+  webhook_url: string | null;
+  webhook_format: WebhookFormat;
+  telegram_chat_id: string | null;
+  on_success: boolean;
+  on_failure: boolean;
+  task_steps: boolean;
+}
+
+export interface NotifyInfo {
+  settings: NotifySettings;
+  telegram_available: boolean;
+}
+
 export interface InviteInfo {
   id: number;
   role: "admin" | "user";
@@ -369,6 +393,11 @@ export const api = {
   setQuota: (name: string, q: Quota) =>
     request<Quota>("PUT", `/users/${encodeURIComponent(name)}/quota`, q),
   createToken: (p: { name?: string; user?: string }) => request<TokenCreated>("POST", "/tokens", p),
+  tokens: () => request<TokenInfo[]>("GET", "/tokens"),
+  deleteToken: (id: number) => request<unknown>("DELETE", `/tokens/${id}`),
+  notify: () => request<NotifyInfo>("GET", "/me/notify"),
+  setNotify: (s: NotifySettings) => request<NotifyInfo>("PUT", "/me/notify", s),
+  testNotify: () => request<unknown>("POST", "/me/notify/test"),
   invites: () => request<InviteInfo[]>("GET", "/invites"),
   createInvite: (body: CreateInviteRequest) => request<InviteCreated>("POST", "/invites", body),
   deleteInvite: (id: number) => request<unknown>("DELETE", `/invites/${id}`),
