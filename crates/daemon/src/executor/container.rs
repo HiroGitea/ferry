@@ -499,6 +499,49 @@ impl Executor for ContainerExecutor {
             .map(|_| ())
     }
 
+    async fn save_image(&self, image: &str, path: &std::path::Path) -> anyhow::Result<()> {
+        let mut args = vec!["save".to_string()];
+        if !self.is_docker() {
+            // oci-archive keeps the reference name so `load` restores it.
+            args.extend(["--format".to_string(), "oci-archive".to_string()]);
+        }
+        args.extend([
+            "-o".to_string(),
+            path.to_string_lossy().to_string(),
+            image.to_string(),
+        ]);
+        self.run_cli(&args).await.map(|_| ())
+    }
+
+    async fn load_image(&self, path: &std::path::Path) -> anyhow::Result<Vec<String>> {
+        let out = self
+            .run_cli(&[
+                "load".into(),
+                "-i".into(),
+                path.to_string_lossy().to_string(),
+            ])
+            .await?;
+        // podman/docker: "Loaded image: localhost/mlq-task-3:3" (one per line)
+        let names: Vec<String> = out
+            .lines()
+            .filter_map(|l| {
+                l.trim().strip_prefix("Loaded image").map(|r| {
+                    r.trim_start_matches(|c| c == ':' || c == 's' || c == ' ')
+                        .trim()
+                        .to_string()
+                })
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(names)
+    }
+
+    async fn tag_image(&self, src: &str, dst: &str) -> anyhow::Result<()> {
+        self.run_cli(&["tag".into(), src.to_string(), dst.to_string()])
+            .await
+            .map(|_| ())
+    }
+
     async fn env_idle(&self, env: &Handle) -> anyhow::Result<bool> {
         // init + `sleep infinity` are the only processes of an idle environment.
         let fmt: Vec<String> = if self.is_docker() {

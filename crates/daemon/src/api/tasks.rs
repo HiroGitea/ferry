@@ -5,7 +5,9 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use mlq_core::api::{
-    CheckoutRequest, CreateTaskRequest, ListTasksQuery, PinSnapshotRequest, UpdateTaskRequest,
+    ArchiveInfo, ArchiveManifest, CheckoutRequest, CreateTaskRequest, ExportTaskRequest,
+    ExportTaskResponse, ImportArchiveRequest, ListTasksQuery, PinSnapshotRequest,
+    UpdateTaskRequest,
 };
 use mlq_core::{Job, JobState, Task, TaskDetail, TaskId, TaskState, TaskSummary};
 
@@ -283,4 +285,87 @@ pub async fn delete(
     tasks::delete(&state, &t).await?;
     publish_task(&state, id);
     Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+// ---- archives (.7z on the NAS)
+
+pub async fn export(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<TaskId>,
+    Json(req): Json<ExportTaskRequest>,
+) -> ApiResult<ExportTaskResponse> {
+    let t = load(&state, &user, id).await?;
+    let policy = crate::archive::ImagePolicy::parse(
+        req.images
+            .as_deref()
+            .unwrap_or(&state.config.archive.images),
+    )
+    .ok_or_else(|| ApiError::BadRequest("images must be none, head, pinned or all".into()))?;
+    let lock = state.task_lock(id);
+    let _g = lock.lock().await;
+    if has_active_step(&state.store.task_steps(id).await?) {
+        return Err(ApiError::Conflict(
+            "a step is running; wait for it before exporting".into(),
+        ));
+    }
+    tasks::drop_warm(&state, &t).await;
+    let mut r = crate::archive::export_task(&state, &t, policy).await?;
+    state.store.set_task_archive(id, &r.path).await?;
+    if req.offload {
+        let t = state.store.task(id).await?.unwrap();
+        crate::archive::offload(&state, &t, &r.path).await?;
+        r.offloaded = true;
+    }
+    publish_task(&state, id);
+    Ok(Json(r))
+}
+
+pub async fn list_archives(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+) -> ApiResult<Vec<ArchiveInfo>> {
+    let scope = if user.is_admin() {
+        None
+    } else {
+        Some(user.0.name.as_str())
+    };
+    Ok(Json(crate::archive::list(&state, scope).await?))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ArchiveNameQuery {
+    pub name: String,
+}
+
+fn check_archive_access(user: &AuthUser, name: &str) -> Result<(), ApiError> {
+    let owner = name.split('/').next().unwrap_or("");
+    if !user.is_admin() && owner != crate::workspace::sanitize_name(&user.0.name) {
+        return Err(ApiError::Forbidden("not your archive".into()));
+    }
+    Ok(())
+}
+
+pub async fn archive_manifest(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Query(q): Query<ArchiveNameQuery>,
+) -> ApiResult<ArchiveManifest> {
+    check_archive_access(&user, &q.name)?;
+    let path =
+        crate::archive::resolve(&state, &q.name).map_err(|e| ApiError::NotFound(e.to_string()))?;
+    Ok(Json(crate::archive::read_manifest(&state, &path).await?))
+}
+
+pub async fn import(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(req): Json<ImportArchiveRequest>,
+) -> ApiResult<TaskDetail> {
+    check_archive_access(&user, &req.name)?;
+    let path = crate::archive::resolve(&state, &req.name)
+        .map_err(|e| ApiError::NotFound(e.to_string()))?;
+    let t = crate::archive::import_task(&state, user.0.id, &path, req.task_name.as_deref()).await?;
+    publish_task(&state, t.id);
+    Ok(Json(detail(&state, t).await?))
 }

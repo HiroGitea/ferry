@@ -148,6 +148,20 @@ pub struct CheckoutParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExportParams {
+    pub task_id: i64,
+    /// Snapshot images to include: "none", "head" (default), "pinned", "all".
+    pub images: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImportParams {
+    /// Archive name as returned by list_archives, e.g. "alice/task-3-llm-eval-20261105-050000.7z".
+    pub name: String,
+    pub task_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MetricsParams {
     /// "host", "gpu", "job" or "task".
     pub scope: String,
@@ -657,6 +671,58 @@ impl MlqServer {
         let c = self.client_for(&ctx)?;
         match c.close_task(p.task_id).await {
             Ok(t) => json(&t.summary),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Write a self-contained .7z of a task (HEAD environment image, /work, /out, step logs, metrics) to the NAS archive. Returns its path and manifest."
+    )]
+    async fn export_task(
+        &self,
+        Parameters(p): Parameters<ExportParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        let req = mlq_core::api::ExportTaskRequest {
+            images: p.images,
+            offload: false,
+        };
+        match c.export_task(p.task_id, &req).await {
+            Ok(r) => json(
+                &serde_json::json!({ "path": r.path, "bytes": r.bytes, "steps": r.manifest.steps.len(), "images": r.manifest.images }),
+            ),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(description = "List task archives (.7z) on the NAS that you can restore.")]
+    async fn list_archives(
+        &self,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        match c.archives().await {
+            Ok(a) => json(&a),
+            Err(e) => Ok(err_result(e)),
+        }
+    }
+
+    #[tool(
+        description = "Restore a task archive as a new task (environment image, /work, /out and logs); then continue it with run_job and the new task_id."
+    )]
+    async fn import_archive(
+        &self,
+        Parameters(p): Parameters<ImportParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        let req = mlq_core::api::ImportArchiveRequest {
+            name: p.name,
+            task_name: p.task_name,
+        };
+        match c.import_archive(&req).await {
+            Ok(d) => json(&d.summary),
             Err(e) => Ok(err_result(e)),
         }
     }

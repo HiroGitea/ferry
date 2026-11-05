@@ -5,11 +5,12 @@ use std::time::Duration;
 use anyhow::Context;
 use futures::StreamExt;
 use mlq_core::api::{
-    ArtifactEntry, CheckoutRequest, ClusterStatus, CreateTaskRequest, CreateTokenRequest,
-    CreateUserRequest, ErrorBody, Event, GpuInfo, ImageInfo, JobResult, ListJobsQuery,
-    ListTasksQuery, LogChunk, Me, MetricInfo, MetricsQuery, MetricsResult, PinSnapshotRequest,
-    PullImageRequest, SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo,
-    UpdateTaskRequest, UsageQuery, UserUsage,
+    ArchiveInfo, ArchiveManifest, ArtifactEntry, CheckoutRequest, ClusterStatus, CreateTaskRequest,
+    CreateTokenRequest, CreateUserRequest, ErrorBody, Event, ExportTaskRequest, ExportTaskResponse,
+    GpuInfo, ImageInfo, ImportArchiveRequest, JobResult, ListJobsQuery, ListTasksQuery, LogChunk,
+    Me, MetricInfo, MetricsQuery, MetricsResult, PinSnapshotRequest, PullImageRequest,
+    SubmitJobRequest, SubmitJobResponse, TokenCreated, TokenInfo, UpdateTaskRequest, UsageQuery,
+    UserUsage,
 };
 use mlq_core::{Job, JobId, Quota, TaskDetail, TaskId, TaskSummary, User};
 use reqwest::{Method, RequestBuilder, StatusCode};
@@ -321,6 +322,34 @@ impl Client {
     }
     pub async fn delete_task(&self, id: TaskId) -> Result<serde_json::Value, ClientError> {
         self.send(self.req(Method::DELETE, &format!("/tasks/{id}")))
+            .await
+    }
+    pub async fn export_task(
+        &self,
+        id: TaskId,
+        req: &ExportTaskRequest,
+    ) -> Result<ExportTaskResponse, ClientError> {
+        self.send(
+            self.req(Method::POST, &format!("/tasks/{id}/export"))
+                .json(req),
+        )
+        .await
+    }
+    pub async fn archives(&self) -> Result<Vec<ArchiveInfo>, ClientError> {
+        self.send(self.req(Method::GET, "/archives")).await
+    }
+    pub async fn archive_manifest(&self, name: &str) -> Result<ArchiveManifest, ClientError> {
+        self.send(
+            self.req(Method::GET, "/archives/manifest")
+                .query(&[("name", name)]),
+        )
+        .await
+    }
+    pub async fn import_archive(
+        &self,
+        req: &ImportArchiveRequest,
+    ) -> Result<TaskDetail, ClientError> {
+        self.send(self.req(Method::POST, "/archives/import").json(req))
             .await
     }
 

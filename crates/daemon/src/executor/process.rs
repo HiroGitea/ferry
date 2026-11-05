@@ -167,6 +167,18 @@ impl Executor for ProcessExecutor {
         Ok(())
     }
 
+    async fn save_image(&self, _image: &str, _path: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::bail!("image export needs a container runtime (runtime = \"podman\")")
+    }
+
+    async fn load_image(&self, _path: &std::path::Path) -> anyhow::Result<Vec<String>> {
+        anyhow::bail!("image import needs a container runtime (runtime = \"podman\")")
+    }
+
+    async fn tag_image(&self, _src: &str, _dst: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn env_idle(&self, _env: &Handle) -> anyhow::Result<bool> {
         Ok(true)
     }

@@ -136,6 +136,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TaskCmd,
     },
+    /// Task archives (.7z) on the NAS: list, inspect, restore
+    Archive {
+        #[command(subcommand)]
+        cmd: ArchiveCmd,
+    },
     /// Print metric time series as sparklines (e.g. `mlq metrics 'gpu.*' --since 1h`)
     Metrics {
         /// Comma separated keys; `prefix*` patterns allowed. Use `--list` to see keys.
@@ -216,6 +221,31 @@ enum TaskCmd {
     /// Delete a closed task's snapshots and workspace (archive is kept)
     Rm {
         id: i64,
+    },
+    /// Write a self-contained .7z (environment image, /work, /out, logs, metrics) to the NAS
+    Export {
+        id: i64,
+        /// Snapshot images to include: none, head, pinned, all
+        #[arg(long)]
+        images: Option<String>,
+        /// After a verified export, free the SSD workspace and snapshot images (closed tasks only)
+        #[arg(long)]
+        offload: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ArchiveCmd {
+    /// Archives on the NAS
+    #[command(alias = "ls")]
+    List,
+    /// Show an archive's manifest (steps, snapshots, included images)
+    Show { name: String },
+    /// Restore an archive as a new task
+    Import {
+        name: String,
+        #[arg(long)]
+        name_as: Option<String>,
     },
 }
 
@@ -641,11 +671,66 @@ async fn real_main() -> anyhow::Result<()> {
                     println!("task {id} deleted");
                     None
                 }
+                TaskCmd::Export {
+                    id,
+                    images,
+                    offload,
+                } => {
+                    let r = c
+                        .export_task(
+                            *id,
+                            &mlq_core::api::ExportTaskRequest {
+                                images: images.clone(),
+                                offload: *offload,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&r)?);
+                    } else {
+                        fmt::print_export(&r);
+                    }
+                    None
+                }
             };
             if let Some(d) = detail {
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&d)?);
                 } else {
+                    fmt::print_task(&d);
+                }
+            }
+        }
+        Cmd::Archive { cmd } => {
+            let c = client(&cli)?;
+            match cmd {
+                ArchiveCmd::List => {
+                    let a = c.archives().await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&a)?);
+                    } else {
+                        fmt::print_archives(&a);
+                    }
+                }
+                ArchiveCmd::Show { name } => {
+                    let m = c.archive_manifest(name).await?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&m)?);
+                    } else {
+                        fmt::print_manifest(&m);
+                    }
+                }
+                ArchiveCmd::Import { name, name_as } => {
+                    let d = c
+                        .import_archive(&mlq_core::api::ImportArchiveRequest {
+                            name: name.clone(),
+                            task_name: name_as.clone(),
+                        })
+                        .await?;
+                    println!(
+                        "imported as task {}; continue with: mlq run --task {} -- <command>",
+                        d.summary.task.id, d.summary.task.id
+                    );
                     fmt::print_task(&d);
                 }
             }

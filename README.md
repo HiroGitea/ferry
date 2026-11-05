@@ -39,7 +39,7 @@ Claude Code / 面板 / mlq CLI ──token──▶ mlqd (axum, SQLite)
 ## 安装（Arch Linux）
 
 ```bash
-sudo pacman -S podman nvidia-container-toolkit nvidia-utils rust pnpm nodejs
+sudo pacman -S podman 7zip nvidia-container-toolkit nvidia-utils rust pnpm nodejs
 ```
 
 ```bash
@@ -135,6 +135,40 @@ mlq task checkout 3 1                                    # 回到存档 1 继续
 mlq task close 3                                         # 结束：取消排队步骤、停保温容器、归档 /out
 ```
 
+### 存档文件（.7z，放在 NAS/HDD 上）
+
+任务关闭时（或 `mlq task export <id>`）自动在 `<archive_dir>/<用户>/` 生成一个自包含的 7z，离开 mlq 也能用：
+
+```text
+task-3-llm-eval-20261105-050858.7z
+├── manifest.json        任务、步骤、存档图、包含的镜像、每个文件的 sha256
+├── README.txt           可读的摘要 + 手工恢复方法（podman load + podman run）
+├── steps.jsonl          每行一个步骤记录
+├── env/snap-11.oci.tar  环境镜像（podman save；默认只含 HEAD，可选 pinned / all）
+├── work/                /work（代码、输入）
+├── out/                 /out（结果）
+├── logs/<step>.log      每个步骤的输出
+└── metrics/task.csv     整个生命周期的资源曲线（t,key,unit,avg,max）
+```
+
+```bash
+mlq archive list                                 # NAS 上的存档
+```
+
+```bash
+mlq archive show admin/task-3-llm-eval-20261105-050858.7z
+```
+
+```bash
+mlq archive import admin/task-3-llm-eval-20261105-050858.7z --name-as "llm-eval again"   # 恢复成新任务，HEAD 镜像、/work、/out 都回来
+```
+
+```bash
+mlq task export 3 --images pinned --offload       # 导出后释放 SSD 工作区和快照镜像（仅已关闭任务；校验通过才删）
+```
+
+7z 用 LZMA2 多线程、solid 压缩，先写 `.7z.part`，`7z t` 校验通过后再改名；导入时先核对 manifest 里的 sha256。
+
 ### 监控
 
 ```bash
@@ -177,6 +211,7 @@ cd web && pnpm dev   # 面板开发服务器，API 代理到 127.0.0.1:7070
 
 - 存档是容器镜像层：每个成功步骤增加一层，同一条链超过约 100 个成功步骤会触及 overlay 层数上限（届时 checkout 到早期存档或 `--base` 重新搭环境）。
 - 存档只覆盖容器文件系统；`/work` 和 `/out` 是 SSD 上的目录，不随 checkout 回滚。
+- 7z 里的镜像是完整链（含基础镜像），PyTorch 基础镜像约 5-8 GB；按需用 `images = "none"` 只存数据，恢复时重拉基础镜像。
 - 保温容器不占调度器资源，下一步只有在镜像、CPU、内存和分到的 GPU 都相同时才复用，否则冷启动（从存档启动，通常 1 秒内）。
 
 - 单机。数据模型里保留了 `node_id` 和 `Executor` 抽象，多节点需要增加一个在计算节点上运行的 agent 执行器。

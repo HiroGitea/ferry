@@ -442,6 +442,28 @@ pub async fn close(state: &AppState, task: &Task) -> anyhow::Result<()> {
         .store
         .set_task_state(task.id, TaskState::Closed)
         .await?;
+    // Self-contained .7z on the NAS; the per-step mirror directory is then redundant.
+    if state.config.archive.on_close && state.config.retention.archive_dir.is_some() {
+        let policy = crate::archive::ImagePolicy::parse(&state.config.archive.images)
+            .unwrap_or(crate::archive::ImagePolicy::Head);
+        if let Some(t) = state.store.task(task.id).await? {
+            match crate::archive::export_task(state, &t, policy).await {
+                Ok(r) => {
+                    state.store.set_task_archive(task.id, &r.path).await?;
+                    if let Some(root) = &state.config.retention.archive_dir {
+                        let mirror = archive_dir_for(root, &t);
+                        if mirror.is_dir() {
+                            let _ = std::fs::remove_dir_all(&mirror);
+                        }
+                    }
+                }
+                Err(e) => warn!(
+                    task = task.id,
+                    "7z export on close failed (mirror directory kept): {e:#}"
+                ),
+            }
+        }
+    }
     Ok(())
 }
 

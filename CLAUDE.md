@@ -9,7 +9,8 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
   (`podman commit`), rollback and keep-warm (`tasks.rs`), executors (`executor/container.rs` = podman/docker CLI
   incl. env/exec/commit, `executor/process.rs` = dev only, `executor/usage.rs` = cgroup v1/v2 + /proc counters),
   GPU providers (`gpu/`), netdata-style metrics (`metrics/`: collector + tiered storage in `metrics.db`),
-  scratch retention + NAS archive (`retention.rs`).
+  scratch retention + NAS archive (`retention.rs`), self-contained .7z task archives with export/import/offload
+  (`archive.rs`, needs the `7z` binary).
 - `crates/client` — REST client used by the CLI and MCP.
 - `crates/mcp` — rmcp tool router; served over stdio (`mlq mcp serve`) and mounted at `/mcp` in the daemon.
 - `crates/cli` (`mlq`) — user CLI; `mlq daemon` runs mlqd in-process.

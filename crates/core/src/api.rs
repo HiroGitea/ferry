@@ -329,3 +329,69 @@ pub struct MetricTick {
     pub t: i64,
     pub values: std::collections::BTreeMap<String, f32>,
 }
+
+// ---------- task archives (.7z on the NAS) ----------
+
+/// `manifest.json` inside a task archive.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ArchiveManifest {
+    /// Archive format version.
+    pub format: u32,
+    pub created_at: DateTime<Utc>,
+    pub mlq_version: String,
+    pub hostname: String,
+    pub task: crate::task::Task,
+    pub steps: Vec<Job>,
+    pub snapshots: Vec<crate::task::Snapshot>,
+    /// Snapshot images included under `env/`: snapshot id -> file name. `None` id = base image.
+    pub images: Vec<ArchiveImage>,
+    /// Relative path -> sha256 of every file except manifest.json.
+    pub checksums: std::collections::BTreeMap<String, String>,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ArchiveImage {
+    pub snapshot_id: Option<SnapshotId>,
+    pub image: String,
+    pub file: String,
+    pub bytes: u64,
+    pub is_head: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ArchiveInfo {
+    /// Path relative to the archive root (what `import` accepts).
+    pub name: String,
+    pub path: String,
+    pub bytes: u64,
+    pub modified_at: DateTime<Utc>,
+    pub user: String,
+    pub task_id: Option<TaskId>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ExportTaskRequest {
+    /// Which snapshot images to include: "none", "head" (default from config), "pinned", "all".
+    pub images: Option<String>,
+    /// Also remove the task's SSD workspace and snapshot images after a verified export
+    /// (the task must be closed).
+    #[serde(default)]
+    pub offload: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ExportTaskResponse {
+    pub path: String,
+    pub bytes: u64,
+    pub manifest: ArchiveManifest,
+    pub offloaded: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ImportArchiveRequest {
+    /// Archive name as listed by `GET /archives` (relative to the archive root).
+    pub name: String,
+    /// Name for the new task (default: the archived name).
+    pub task_name: Option<String>,
+}

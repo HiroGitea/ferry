@@ -83,6 +83,11 @@ pub trait Executor: Send + Sync {
     /// Save the environment's filesystem as `image`; returns the image size if known.
     async fn commit(&self, env: &Handle, image: &str) -> anyhow::Result<Option<u64>>;
     async fn remove_image(&self, image: &str) -> anyhow::Result<()>;
+    /// Write an image as an OCI archive tar to `path`.
+    async fn save_image(&self, image: &str, path: &std::path::Path) -> anyhow::Result<()>;
+    /// Load an image archive; returns the image names it contained.
+    async fn load_image(&self, path: &std::path::Path) -> anyhow::Result<Vec<String>>;
+    async fn tag_image(&self, src: &str, dst: &str) -> anyhow::Result<()>;
     /// True when nothing but the environment's idle init process is left running.
     async fn env_idle(&self, env: &Handle) -> anyhow::Result<bool>;
     /// Stop and remove an environment.

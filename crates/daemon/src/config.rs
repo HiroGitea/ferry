@@ -34,6 +34,7 @@ pub struct Config {
     pub mounts: Vec<Mount>,
     pub container: ContainerConfig,
     pub retention: RetentionConfig,
+    pub archive: ArchiveConfig,
     pub fair_share: FairShareConfig,
     pub metrics: crate::metrics::MetricsConfig,
     pub log_level: String,
@@ -64,6 +65,34 @@ pub struct ContainerConfig {
     pub gpu_flag_style: String,
     /// Extra arguments appended to every `run` invocation.
     pub extra_args: Vec<String>,
+}
+
+/// Self-contained `.7z` task archives written to `retention.archive_dir` (the NAS).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ArchiveConfig {
+    /// Write a .7z archive when a task is closed (and remove the per-step mirror directory).
+    pub on_close: bool,
+    /// Snapshot images to include by default: "none", "head", "pinned" (head + pinned), "all".
+    pub images: String,
+    /// 7z compression level 0-9 (5 = default; 1 is much faster for already-compressed layers).
+    pub level: u8,
+    /// Path of the 7z binary (`7z`, `7zz` or `7za`).
+    pub seven_zip: String,
+    /// Keep per-step CSV metrics in the archive.
+    pub metrics: bool,
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self {
+        Self {
+            on_close: true,
+            images: "head".into(),
+            level: 5,
+            seven_zip: "7z".into(),
+            metrics: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +145,7 @@ impl Default for Config {
             mounts: vec![],
             container: ContainerConfig::default(),
             retention: RetentionConfig::default(),
+            archive: ArchiveConfig::default(),
             fair_share: FairShareConfig::default(),
             metrics: crate::metrics::MetricsConfig::default(),
             log_level: "info".into(),

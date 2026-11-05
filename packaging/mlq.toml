@@ -87,6 +87,15 @@ tier0_days = 7      # per-second
 tier1_days = 90     # per-minute
 tier2_days = 730    # per-hour
 
+[archive]
+# Self-contained .7z task archives on the NAS (<archive_dir>/<user>/task-<id>-<name>-<time>.7z):
+# manifest.json, README.txt, steps.jsonl, env/ (snapshot images), work/, out/, logs/, metrics/task.csv.
+on_close = true        # archive a task when it is closed (then drop the per-step mirror directory)
+images = "head"        # none | head | pinned | all
+level = 5              # 7z compression level 0-9
+seven_zip = "7z"       # pacman -S 7zip
+metrics = true
+
 [fair_share]
 enabled = true
 # Usage halves every 7 days when ordering queued jobs of equal priority.

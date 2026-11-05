@@ -545,3 +545,120 @@ pub fn print_metrics(r: &mlq_core::api::MetricsResult) {
         );
     }
 }
+
+pub fn print_export(r: &mlq_core::api::ExportTaskResponse) {
+    let m = &r.manifest;
+    println!(
+        "archived task {} \"{}\" -> {}",
+        m.task.id, m.task.name, r.path
+    );
+    println!(
+        "  {} compressed from {} ({} steps, {} snapshots, {} image(s){})",
+        format_bytes(r.bytes),
+        format_bytes(m.total_bytes),
+        m.steps.len(),
+        m.snapshots.len(),
+        m.images.len(),
+        if r.offloaded {
+            "; SSD workspace and images removed"
+        } else {
+            ""
+        }
+    );
+    for i in &m.images {
+        println!(
+            "  image {:<28} {:>8}  {}{}",
+            i.file,
+            format_bytes(i.bytes),
+            i.image,
+            if i.is_head { " (HEAD)" } else { "" }
+        );
+    }
+}
+
+#[derive(Tabled)]
+struct ArchiveRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "USER")]
+    user: String,
+    #[tabled(rename = "TASK")]
+    task: String,
+    #[tabled(rename = "SIZE")]
+    size: String,
+    #[tabled(rename = "MODIFIED")]
+    modified: String,
+}
+
+pub fn print_archives(a: &[mlq_core::api::ArchiveInfo]) {
+    if a.is_empty() {
+        println!("no archives (tasks are archived on close, or with `mlq task export <id>`)");
+        return;
+    }
+    let rows: Vec<ArchiveRow> = a
+        .iter()
+        .map(|x| ArchiveRow {
+            name: x.name.clone(),
+            user: x.user.clone(),
+            task: x.task_id.map(|t| t.to_string()).unwrap_or_default(),
+            size: format_bytes(x.bytes),
+            modified: x.modified_at.format("%Y-%m-%d %H:%M").to_string(),
+        })
+        .collect();
+    println!("{}", Table::new(rows).with(Style::blank()));
+}
+
+pub fn print_manifest(m: &mlq_core::api::ArchiveManifest) {
+    let t = &m.task;
+    println!(
+        "task {} \"{}\"  user={}  exported {} from {} (mlq {})",
+        t.id,
+        t.name,
+        t.user_name,
+        m.created_at.format("%Y-%m-%d %H:%M"),
+        m.hostname,
+        m.mlq_version
+    );
+    println!(
+        "base image {}   HEAD {}   {} files, {}",
+        t.base_image,
+        t.head_snapshot_id
+            .map(|h| format!("snap {h}"))
+            .unwrap_or("base".into()),
+        m.checksums.len(),
+        format_bytes(m.total_bytes)
+    );
+    for i in &m.images {
+        println!(
+            "  image {:<28} {:>8}  {}{}",
+            i.file,
+            format_bytes(i.bytes),
+            i.image,
+            if i.is_head { " (HEAD)" } else { "" }
+        );
+    }
+    println!();
+    let now = chrono::Utc::now();
+    let rows: Vec<StepRow> = m
+        .steps
+        .iter()
+        .map(|j| StepRow {
+            id: j.id,
+            state: j.state.to_string(),
+            from: j
+                .base_snapshot_id
+                .map(|s| format!("snap {s}"))
+                .unwrap_or_else(|| "base".into()),
+            saved: j
+                .snapshot_id
+                .map(|s| format!("snap {s}"))
+                .unwrap_or_default(),
+            time: j.runtime_secs(now).map(format_duration).unwrap_or_default(),
+            command: truncate(&j.command.join(" "), 40),
+            reason: truncate(j.reason.as_deref().unwrap_or(""), 40),
+        })
+        .collect();
+    if !rows.is_empty() {
+        println!("{}", Table::new(rows).with(Style::blank()));
+    }
+}
