@@ -227,6 +227,20 @@ ferry archive list ; ferry archive show <name> ; ferry archive import <name> --n
 ferry task export 3 --offload            # write the .7z, then free SSD space and snapshot images
 ```
 
+### Training curves
+
+Append one JSON object per line to `/out/metrics.jsonl` (any numeric fields; `step`, `epoch` or
+`iter` is used as the x axis). The job and task pages chart every field live, Claude reads them
+with the `get_train_metrics` tool, and the terminal shows a summary:
+
+```python
+print(json.dumps({"step": step, "loss": loss, "lr": lr}), file=open("/out/metrics.jsonl", "a"), flush=True)
+```
+
+```bash
+ferry curves <job-id>
+```
+
 ### Monitoring
 
 The dashboard (`http://server:7070`) has Monitor, Tasks, Jobs, Usage, Nodes & GPUs and Users
@@ -253,7 +267,7 @@ claude mcp add --transport http ferry http://server:7070/mcp --header "Authoriza
 Tools: `cluster_status`, `submit_job` (dry run by default), `run_job`, `list_jobs`, `get_job`,
 `cancel_job`, `get_job_log`, `get_result`, `read_artifact`, `get_usage`, `create_task`,
 `list_tasks`, `get_task`, `checkout_snapshot`, `close_task`, `export_task`, `list_archives`,
-`import_archive`, `get_metrics`.
+`import_archive`, `get_metrics`, `get_train_metrics`.
 
 ## Development
 

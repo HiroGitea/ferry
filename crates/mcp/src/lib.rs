@@ -183,6 +183,14 @@ pub struct JobIdParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TrainParams {
+    /// Job id (for a task, the id of one of its steps; they share /out).
+    pub id: i64,
+    /// JSON-lines file in /out (default metrics.jsonl).
+    pub file: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListParams {
     /// Filter: queued, held, starting, pulling, running, succeeded, failed, cancelled, timeout.
     pub state: Option<String>,
@@ -549,6 +557,53 @@ impl FerryServer {
             Ok(r) => json(&r),
             Err(e) => Ok(err_result(e)),
         }
+    }
+
+    #[tool(
+        description = "Training curves of a job (or task step) from /out/metrics.jsonl, which the training script appends one JSON object per line, e.g. {\"step\": 100, \"loss\": 0.42}. Returns per metric: first/last/min/max and a ~30-point downsampled curve. Use it to check convergence while a job runs."
+    )]
+    async fn get_train_metrics(
+        &self,
+        Parameters(p): Parameters<TrainParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let c = self.client_for(&ctx)?;
+        let m = match c.train_metrics(p.id, p.file.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => return Ok(err_result(e)),
+        };
+        let summary: serde_json::Map<String, serde_json::Value> = m
+            .series
+            .iter()
+            .map(|(k, pts)| {
+                let ys = pts.iter().map(|p| p.1);
+                let stride = pts.len().div_ceil(30).max(1);
+                let mut curve: Vec<(f64, f64)> = pts.iter().step_by(stride).copied().collect();
+                if let Some(last) = pts.last()
+                    && curve.last() != Some(last)
+                {
+                    curve.push(*last);
+                }
+                (
+                    k.clone(),
+                    serde_json::json!({
+                        "points": pts.len(),
+                        "first": pts.first(),
+                        "last": pts.last(),
+                        "min": ys.clone().fold(f64::INFINITY, f64::min),
+                        "max": ys.fold(f64::NEG_INFINITY, f64::max),
+                        "curve": curve,
+                    }),
+                )
+            })
+            .collect();
+        json(&serde_json::json!({
+            "file": m.file,
+            "x": m.x_key,
+            "lines": m.lines,
+            "truncated": m.truncated,
+            "metrics": summary,
+        }))
     }
 
     #[tool(

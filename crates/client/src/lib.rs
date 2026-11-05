@@ -143,6 +143,17 @@ impl Client {
         self.send(self.req(Method::DELETE, &format!("/jobs/{id}")))
             .await
     }
+    pub async fn train_metrics(
+        &self,
+        id: JobId,
+        file: Option<&str>,
+    ) -> Result<ferry_core::api::TrainMetrics, ClientError> {
+        let mut rb = self.req(Method::GET, &format!("/jobs/{id}/train"));
+        if let Some(f) = file {
+            rb = rb.query(&[("file", f)]);
+        }
+        self.send(rb).await
+    }
     pub async fn preempt(&self, id: JobId) -> Result<Job, ClientError> {
         self.send(self.req(Method::POST, &format!("/jobs/{id}/preempt")))
             .await

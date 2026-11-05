@@ -271,6 +271,14 @@ export interface NotifyInfo {
   telegram_available: boolean;
 }
 
+export interface TrainMetrics {
+  file: string;
+  x_key: string;
+  series: Record<string, Array<[number, number]>>;
+  lines: number;
+  truncated: boolean;
+}
+
 export interface InviteInfo {
   id: number;
   role: "admin" | "user";
@@ -378,6 +386,7 @@ export const api = {
   cancel: (id: number) => request<Job>("DELETE", `/jobs/${id}`),
   release: (id: number) => request<Job>("POST", `/jobs/${id}/release`),
   preempt: (id: number) => request<Job>("POST", `/jobs/${id}/preempt`),
+  trainMetrics: (id: number, file?: string) => request<TrainMetrics>("GET", `/jobs/${id}/train${qs({ file })}`),
   log: (id: number, p: { tail?: number; offset?: number }) =>
     request<LogChunk>("GET", `/jobs/${id}/log${qs(p)}`),
   result: (id: number) => request<JobResult>("GET", `/jobs/${id}/result`),

@@ -16,6 +16,8 @@ export function fmtValue(v: number | null | undefined, unit: string): string {
       return `${v.toFixed(0)} °C`;
     case "load":
       return v.toFixed(2);
+    case "num":
+      return fmtNum(v);
     default:
       return Number.isInteger(v) ? String(v) : v.toFixed(1);
   }
@@ -25,8 +27,20 @@ export function fmtValue(v: number | null | undefined, unit: string): string {
 export function fmtTick(v: number, unit: string): string {
   if (unit === "B" || unit === "B/s") return fmtBytes(Math.max(0, v));
   if (unit === "%") return `${Math.round(v)}%`;
+  if (unit === "num") return fmtNum(v);
   if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+/** Plain number with sensible precision (training metrics: loss 0.0123, lr 3e-4, step 12k). */
+export function fmtNum(v: number): string {
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a >= 1e6) return `${(v / 1e6).toPrecision(3)}M`;
+  if (a >= 1e4) return `${(v / 1e3).toPrecision(3)}k`;
+  if (Number.isInteger(v)) return String(v);
+  if (a < 1e-3) return v.toExponential(1);
+  return String(Number(v.toPrecision(4)));
 }
 
 export function fmtClock(t: number, span: number): string {

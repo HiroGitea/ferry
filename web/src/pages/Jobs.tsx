@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Download, RefreshCw, Square, X } from "lucide-react";
 import { ACTIVE, TERMINAL, api, fmtBytes, fmtDuration, fmtTime, runtimeSecs, type Job } from "../api";
 import MetricChart from "../charts/MetricChart";
+import TrainCharts from "../charts/TrainCharts";
 import type { Range } from "../charts/useMetrics";
 import { useTick } from "../hooks";
 import { Button, Card, Empty, ErrorBox, Select, StateBadge, Table, Td, Th, cn } from "../components/ui";
@@ -223,6 +224,7 @@ export function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) 
             )}
           </section>
         )}
+        {j && j.started_at && <TrainCharts jobId={j.id} live={!terminal} />}
         {j && j.started_at && <JobCharts job={j} />}
         <LogView id={id} live={!terminal} />
       </div>

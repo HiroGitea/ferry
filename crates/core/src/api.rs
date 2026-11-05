@@ -597,3 +597,108 @@ pub struct ImportArchiveRequest {
     /// Node to restore onto (default: the primary node). Needs a container runtime for the image.
     pub node: Option<String>,
 }
+
+/// Training curves parsed from a JSON-lines file in `/out` (default `metrics.jsonl`): one object
+/// per line, e.g. `{"step": 100, "loss": 0.42, "lr": 1e-4}`. Every numeric field except the x key
+/// becomes a series.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TrainMetrics {
+    pub file: String,
+    /// Field used as x: "step", "iter", "iteration", "global_step", "epoch", or "line" (the line number).
+    pub x_key: String,
+    /// series name -> [x, y] points, downsampled to at most `max_points` each.
+    pub series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Lines read (including ones that were not JSON objects).
+    pub lines: usize,
+    /// Only the last part of a very large file was read.
+    pub truncated: bool,
+}
+
+impl TrainMetrics {
+    /// Parse JSON lines. Non-object lines and non-finite numbers are skipped.
+    pub fn parse(file: &str, text: &str, max_points: usize) -> TrainMetrics {
+        const X_KEYS: [&str; 5] = ["step", "global_step", "iteration", "iter", "epoch"];
+        let rows: Vec<serde_json::Map<String, serde_json::Value>> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+            .filter_map(|v| match v {
+                serde_json::Value::Object(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let x_key = X_KEYS
+            .iter()
+            .find(|k| {
+                rows.iter()
+                    .any(|r| r.get(**k).and_then(|v| v.as_f64()).is_some())
+            })
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| "line".into());
+        let mut series: BTreeMap<String, Vec<(f64, f64)>> = BTreeMap::new();
+        for (i, r) in rows.iter().enumerate() {
+            let x = if x_key == "line" {
+                i as f64
+            } else {
+                match r.get(&x_key).and_then(|v| v.as_f64()) {
+                    Some(x) => x,
+                    None => continue,
+                }
+            };
+            for (k, v) in r {
+                if *k == x_key {
+                    continue;
+                }
+                if let Some(y) = v.as_f64().filter(|y| y.is_finite()) {
+                    series.entry(k.clone()).or_default().push((x, y));
+                }
+            }
+        }
+        if max_points > 0 {
+            for pts in series.values_mut() {
+                if pts.len() > max_points {
+                    // Keep every n-th point and always the last one.
+                    let stride = pts.len().div_ceil(max_points);
+                    let last = *pts.last().unwrap();
+                    let mut kept: Vec<(f64, f64)> = pts.iter().step_by(stride).copied().collect();
+                    if kept.last() != Some(&last) {
+                        kept.push(last);
+                    }
+                    *pts = kept;
+                }
+            }
+        }
+        TrainMetrics {
+            file: file.to_string(),
+            x_key,
+            series,
+            lines: text.lines().count(),
+            truncated: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod train_tests {
+    use super::TrainMetrics;
+
+    #[test]
+    fn parses_jsonl_with_step_key() {
+        let text = "{\"step\":1,\"loss\":2.0,\"tag\":\"a\"}\nnot json\n{\"step\":2,\"loss\":1.5,\"acc\":0.3}\n[1,2]\n";
+        let m = TrainMetrics::parse("metrics.jsonl", text, 0);
+        assert_eq!(m.x_key, "step");
+        assert_eq!(m.series["loss"], vec![(1.0, 2.0), (2.0, 1.5)]);
+        assert_eq!(m.series["acc"], vec![(2.0, 0.3)]);
+        assert!(!m.series.contains_key("tag"));
+        assert_eq!(m.lines, 4);
+    }
+
+    #[test]
+    fn falls_back_to_line_number_and_downsamples() {
+        let text: String = (0..1000).map(|i| format!("{{\"loss\":{i}}}\n")).collect();
+        let m = TrainMetrics::parse("m", &text, 100);
+        assert_eq!(m.x_key, "line");
+        let pts = &m.series["loss"];
+        assert!(pts.len() <= 101);
+        assert_eq!(pts.last(), Some(&(999.0, 999.0)));
+    }
+}

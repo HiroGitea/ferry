@@ -200,6 +200,18 @@ ferry archive list ; ferry archive show <名字> ; ferry archive import <名字>
 ferry task export 3 --offload            # 写出 .7z 后释放 SSD 工作区和快照镜像
 ```
 
+### 训练曲线
+
+训练脚本往 `/out/metrics.jsonl` 每行追加一个 JSON 对象（任意数值字段；有 `step`、`epoch` 或 `iter` 就用作横轴）。作业和任务页面会实时画出每个字段，Claude 用 `get_train_metrics` 工具读取，终端里看摘要：
+
+```python
+print(json.dumps({"step": step, "loss": loss, "lr": lr}), file=open("/out/metrics.jsonl", "a"), flush=True)
+```
+
+```bash
+ferry curves <作业id>
+```
+
 ### 监控
 
 面板（`http://server:7070`）有 Monitor、Tasks、Jobs、Usage、Nodes & GPUs、Users 几页。终端里：
@@ -222,7 +234,7 @@ claude mcp add --scope user ferry -- ferry mcp serve
 claude mcp add --transport http ferry http://server:7070/mcp --header "Authorization: Bearer ferry_..."
 ```
 
-工具：`cluster_status`、`submit_job`（默认 dry-run）、`run_job`、`list_jobs`、`get_job`、`cancel_job`、`get_job_log`、`get_result`、`read_artifact`、`get_usage`、`create_task`、`list_tasks`、`get_task`、`checkout_snapshot`、`close_task`、`export_task`、`list_archives`、`import_archive`、`get_metrics`。
+工具：`cluster_status`、`submit_job`（默认 dry-run）、`run_job`、`list_jobs`、`get_job`、`cancel_job`、`get_job_log`、`get_result`、`read_artifact`、`get_usage`、`create_task`、`list_tasks`、`get_task`、`checkout_snapshot`、`close_task`、`export_task`、`list_archives`、`import_archive`、`get_metrics`、`get_train_metrics`。
 
 ## 开发
 

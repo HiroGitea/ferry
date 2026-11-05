@@ -713,3 +713,55 @@ pub async fn preempt(
     publish_job(&state, id).await;
     Ok(Json(state.store.job(id).await?.unwrap()))
 }
+
+#[derive(serde::Deserialize)]
+pub struct TrainQuery {
+    /// File in /out (default metrics.jsonl).
+    file: Option<String>,
+    /// Max points per series (default 2000).
+    max_points: Option<usize>,
+}
+
+/// Training curves from a JSON-lines file the job writes to /out (task steps share the task's /out).
+pub async fn train_metrics(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<JobId>,
+    Query(q): Query<TrainQuery>,
+) -> ApiResult<ferry_core::api::TrainMetrics> {
+    use futures::StreamExt;
+    const CAP: usize = 32 << 20;
+    let job = load_job(&state, &user, id).await?;
+    let (files, ws) = files_of(&state, &job)?;
+    let name = q.file.unwrap_or_else(|| "metrics.jsonl".into());
+    let path = ws
+        .resolve_in(&ws.out(), &name)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let (_, mut stream) = files.open_file(&path).await.map_err(|_| {
+        ApiError::NotFound(format!(
+            "/out/{name} not found (write one JSON object per line)"
+        ))
+    })?;
+    // Keep only the last CAP bytes of very large files.
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| ApiError::Internal(e.into()))?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() > CAP * 2 {
+            buf.drain(..buf.len() - CAP);
+            truncated = true;
+        }
+    }
+    if buf.len() > CAP {
+        buf.drain(..buf.len() - CAP);
+        truncated = true;
+    }
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if truncated && let Some(nl) = text.find('\n') {
+        text.drain(..=nl); // drop the partial first line
+    }
+    let mut m = ferry_core::api::TrainMetrics::parse(&name, &text, q.max_points.unwrap_or(2000));
+    m.truncated = truncated;
+    Ok(Json(m))
+}

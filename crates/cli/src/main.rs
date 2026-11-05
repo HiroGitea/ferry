@@ -83,6 +83,13 @@ enum Cmd {
     Release { id: i64 },
     /// Admin: kill a running job and put it back in the queue
     Preempt { ids: Vec<i64> },
+    /// Training curves from /out/metrics.jsonl (one JSON object per line): last/min/max per metric
+    Curves {
+        id: i64,
+        /// Another JSON-lines file in /out
+        #[arg(long)]
+        file: Option<String>,
+    },
     /// Print (or follow) a job's log
     Logs {
         id: i64,
@@ -682,6 +689,15 @@ async fn real_main() -> anyhow::Result<()> {
             let c = client(&cli)?;
             let j = c.release(*id).await?;
             println!("job {} -> {}", j.id, j.state);
+        }
+        Cmd::Curves { id, file } => {
+            let c = client(&cli)?;
+            let m = c.train_metrics(*id, file.as_deref()).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&m)?);
+            } else {
+                fmt::print_curves(&m);
+            }
         }
         Cmd::Preempt { ids } => {
             let c = client(&cli)?;

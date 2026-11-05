@@ -32,6 +32,8 @@ interface Props {
   bands?: Band[];
   dimmed?: boolean;
   empty?: string;
+  /** Non-time x axis (e.g. training step): label for an x value. */
+  xFormat?: (x: number) => string;
 }
 
 const PAD = { l: 52, r: 10, t: 8, b: 20 };
@@ -66,7 +68,7 @@ function medianStep(points: Array<[number, number | null]>): number {
   return Math.max(1, d[d.length >> 1]);
 }
 
-export default function TimeChart({ title, unit, series, from, to, stacked, yMax, height = 150, bands = [], dimmed, empty }: Props) {
+export default function TimeChart({ title, unit, series, from, to, stacked, yMax, height = 150, bands = [], dimmed, empty, xFormat }: Props) {
   const { hoverT, setHoverT } = useChartSync();
   const ref = useRef<SVGSVGElement>(null);
   const [width, setWidth] = useState(600);
@@ -271,7 +273,7 @@ export default function TimeChart({ title, unit, series, from, to, stacked, yMax
               fill="var(--tick)"
               className="tabular-nums"
             >
-              {fmtClock(t, span)}
+              {xFormat ? xFormat(t) : fmtClock(t, span)}
             </text>
           ))}
           {geometry.paths.map((p, i) =>
@@ -295,7 +297,7 @@ export default function TimeChart({ title, unit, series, from, to, stacked, yMax
             className="pointer-events-none absolute top-1 z-10 rounded-md border border-border bg-card px-2 py-1.5 text-xs shadow-md"
             style={geometry.x(showT) > width / 2 ? { right: width - geometry.x(showT) + 8 } : { left: geometry.x(showT) + 8 }}
           >
-            <div className="mb-0.5 text-[11px] text-muted-fg tabular-nums">{new Date(showT * 1000).toLocaleString()}</div>
+            <div className="mb-0.5 text-[11px] text-muted-fg tabular-nums">{xFormat ? xFormat(showT) : new Date(showT * 1000).toLocaleString()}</div>
             {readout.map((s) => (
               <div key={s.key} className="flex items-center gap-2">
                 <span className="inline-block h-[2px] w-3" style={{ background: s.color }} />

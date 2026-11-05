@@ -789,3 +789,53 @@ pub fn print_invites(list: &[ferry_core::api::InviteInfo]) {
         println!("{}", Table::new(rows).with(Style::blank()));
     }
 }
+
+pub fn print_curves(m: &ferry_core::api::TrainMetrics) {
+    #[derive(Tabled)]
+    struct Row {
+        metric: String,
+        points: usize,
+        last: String,
+        min: String,
+        max: String,
+    }
+    let g = |v: f64| {
+        format!("{v:.6}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    let rows: Vec<Row> = m
+        .series
+        .iter()
+        .map(|(k, pts)| {
+            let ys = pts.iter().map(|p| p.1);
+            let at = |y: f64| {
+                pts.iter()
+                    .find(|p| p.1 == y)
+                    .map(|p| format!("{} @{} {}", g(y), m.x_key, g(p.0)))
+                    .unwrap_or_default()
+            };
+            Row {
+                metric: k.clone(),
+                points: pts.len(),
+                last: pts
+                    .last()
+                    .map(|p| format!("{} @{} {}", g(p.1), m.x_key, g(p.0)))
+                    .unwrap_or_default(),
+                min: at(ys.clone().fold(f64::INFINITY, f64::min)),
+                max: at(ys.fold(f64::NEG_INFINITY, f64::max)),
+            }
+        })
+        .collect();
+    if rows.is_empty() {
+        println!("{}: no numeric fields in {} line(s)", m.file, m.lines);
+    } else {
+        println!(
+            "{}{}",
+            m.file,
+            if m.truncated { " (last 32 MiB)" } else { "" }
+        );
+        println!("{}", Table::new(rows).with(Style::blank()));
+    }
+}

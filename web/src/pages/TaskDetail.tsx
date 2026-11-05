@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Pin, Play, RotateCcw } from "lucide-react";
-import { TERMINAL, api, fmtBytes, fmtDuration, fmtTime, parseBytes, runtimeSecs, type TaskDetail as TD } from "../api";
+import { ACTIVE, TERMINAL, api, fmtBytes, fmtDuration, fmtTime, parseBytes, runtimeSecs, type TaskDetail as TD } from "../api";
 import MetricChart from "../charts/MetricChart";
+import TrainCharts from "../charts/TrainCharts";
 import type { Band } from "../charts/TimeChart";
 import type { Range } from "../charts/useMetrics";
 import { useTick } from "../hooks";
@@ -32,6 +33,11 @@ export default function TaskDetail() {
           <Snapshots d={d} />
         </div>
       </div>
+      {(() => {
+        // Steps share the task's /out: any started step shows the task's training curves.
+        const last = [...d.steps].reverse().find((j) => j.started_at);
+        return last ? <TrainCharts jobId={last.id} live={d.steps.some((j) => ACTIVE.includes(j.state))} /> : null;
+      })()}
       <TaskCharts d={d} />
       {selected != null && <JobDrawer id={selected} onClose={() => setParams({})} />}
     </div>
