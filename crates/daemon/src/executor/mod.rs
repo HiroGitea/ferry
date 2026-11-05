@@ -71,7 +71,8 @@ pub trait Executor: Send + Sync {
 
     /// Start an idle environment container for a task.
     async fn start_env(&self, spec: &EnvSpec) -> anyhow::Result<Handle>;
-    /// Run one step inside an environment; output is appended to `log_path`.
+    /// Run one step inside an environment, detached: output goes to `log_path` and the exit code
+    /// to `<log_path>.exit`, so the step survives a daemon restart and can be re-waited.
     async fn exec(
         &self,
         env: &Handle,
@@ -80,6 +81,8 @@ pub trait Executor: Send + Sync {
         vars: &BTreeMap<String, String>,
         log_path: &std::path::Path,
     ) -> anyhow::Result<Handle>;
+    /// The environment container an exec handle belongs to.
+    fn env_of(&self, handle: &Handle) -> Option<Handle>;
     /// Save the environment's filesystem as `image`; returns the image size if known.
     async fn commit(&self, env: &Handle, image: &str) -> anyhow::Result<Option<u64>>;
     async fn remove_image(&self, image: &str) -> anyhow::Result<()>;

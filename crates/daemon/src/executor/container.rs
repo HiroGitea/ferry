@@ -4,13 +4,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use mlq_core::api::ImageInfo;
 use mlq_core::{Job, ResourceRequest};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
 use super::{EnvSpec, Executor, Handle, RunSpec, Usage};
 use crate::config::{ContainerConfig, Mount};
@@ -19,9 +18,6 @@ use crate::workspace::Workspace;
 pub struct ContainerExecutor {
     binary: String,
     cfg: ContainerConfig,
-    /// exec handle -> (child `podman exec` process, environment container)
-    execs: Mutex<HashMap<String, (Option<Child>, String)>>,
-    exec_seq: AtomicU64,
     /// container -> cgroup path (None = could not be determined)
     cgroups: Mutex<HashMap<String, Option<String>>>,
 }
@@ -42,18 +38,13 @@ impl ContainerExecutor {
         Self {
             binary,
             cfg,
-            execs: Mutex::new(HashMap::new()),
-            exec_seq: AtomicU64::new(1),
             cgroups: Mutex::new(HashMap::new()),
         }
     }
 
+    /// `exec|<env>|<exit file>` -> env
     fn exec_env(&self, handle: &str) -> Option<String> {
-        self.execs
-            .lock()
-            .unwrap()
-            .get(handle)
-            .map(|(_, env)| env.clone())
+        parse_exec(handle).map(|(env, _)| env)
     }
 
     fn is_docker(&self) -> bool {
@@ -205,6 +196,13 @@ impl ContainerExecutor {
             mounts: &spec.mounts,
             env: &spec.env,
         });
+        // Step logs and exit codes are written by the step itself into /.mlq (the task's logs/
+        // directory), so a step keeps running and stays observable if the daemon restarts.
+        a.push("-v".into());
+        a.push(format!(
+            "{}:/.mlq",
+            spec.workspace.root.join("logs").display()
+        ));
         // A tiny init reaps orphans; the environment idles until steps are exec'd into it.
         a.insert(2, "--init".into());
         a.push(spec.image.clone());
@@ -214,12 +212,20 @@ impl ContainerExecutor {
 
     /// `exec` arguments for one step. Public for unit tests.
     pub fn exec_args(&self, env: &str, job: &Job, vars: &BTreeMap<String, String>) -> Vec<String> {
-        let mut a: Vec<String> = vec!["exec".into(), "-w".into(), "/work".into()];
+        let mut a: Vec<String> = vec!["exec".into(), "-d".into(), "-w".into(), "/work".into()];
         for (k, v) in vars {
             a.push("-e".into());
             a.push(format!("{k}={v}"));
         }
         a.push(env.to_string());
+        // $0 = job id; the command and its arguments are passed as positional parameters so no
+        // shell quoting is needed. Output -> /.mlq/<id>.log, exit code -> /.mlq/<id>.exit.
+        a.extend([
+            "sh".to_string(),
+            "-c".to_string(),
+            "exec >>\"/.mlq/$0.log\" 2>&1; \"$@\"; echo $? > \"/.mlq/$0.exit\"".to_string(),
+            job.id.to_string(),
+        ]);
         a.extend(job.command.iter().cloned());
         a
     }
@@ -261,6 +267,17 @@ impl ContainerExecutor {
             .insert(container.to_string(), path.clone());
         path
     }
+}
+
+/// `<log>.log` -> `<log>.exit`
+pub fn exit_file(log_path: &std::path::Path) -> std::path::PathBuf {
+    log_path.with_extension("exit")
+}
+
+fn parse_exec(handle: &str) -> Option<(String, std::path::PathBuf)> {
+    let rest = handle.strip_prefix("exec|")?;
+    let (env, exit) = rest.split_once('|')?;
+    Some((env.to_string(), std::path::PathBuf::from(exit)))
 }
 
 #[async_trait]
@@ -373,19 +390,22 @@ impl Executor for ContainerExecutor {
     }
 
     async fn wait(&self, handle: &Handle) -> anyhow::Result<i32> {
-        if handle.starts_with("exec:") {
-            let child = self
-                .execs
-                .lock()
-                .unwrap()
-                .get_mut(handle)
-                .and_then(|(c, _)| c.take());
-            let Some(mut child) = child else {
-                bail!("unknown exec handle {handle}")
-            };
-            let status = child.wait().await?;
-            self.execs.lock().unwrap().remove(handle);
-            return Ok(status.code().unwrap_or(-1));
+        if let Some((env, exit_path)) = parse_exec(handle) {
+            // Poll the exit file; if the environment itself is gone the step cannot finish.
+            let mut n = 0u32;
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&exit_path) {
+                    return text
+                        .trim()
+                        .parse::<i32>()
+                        .with_context(|| format!("parsing exit file '{text}'"));
+                }
+                if n % 10 == 0 && !self.is_alive(&env).await.unwrap_or(false) {
+                    bail!("environment container stopped before the step finished");
+                }
+                n += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
         }
         let out = self.run_cli(&["wait".into(), handle.clone()]).await?;
         out.lines()
@@ -407,8 +427,7 @@ impl Executor for ContainerExecutor {
     }
 
     async fn cleanup(&self, handle: &Handle) -> anyhow::Result<()> {
-        if handle.starts_with("exec:") {
-            self.execs.lock().unwrap().remove(handle);
+        if handle.starts_with("exec|") {
             return Ok(());
         }
         let _ = self
@@ -418,9 +437,9 @@ impl Executor for ContainerExecutor {
     }
 
     async fn is_alive(&self, handle: &Handle) -> anyhow::Result<bool> {
-        if handle.starts_with("exec:") {
-            // exec sessions cannot be re-attached after a daemon restart
-            return Ok(self.execs.lock().unwrap().contains_key(handle));
+        if let Some((env, _)) = parse_exec(handle) {
+            // A step is "alive" while its environment is: the exit file tells the rest.
+            return self.is_alive(&env).await;
         }
         let out = self
             .run_cli(&[
@@ -451,29 +470,16 @@ impl Executor for ContainerExecutor {
         vars: &BTreeMap<String, String>,
         log_path: &std::path::Path,
     ) -> anyhow::Result<Handle> {
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
-        let log_err = log.try_clone()?;
-        let child = Command::new(&self.binary)
-            .args(self.exec_args(env, job, vars))
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_err))
-            .kill_on_drop(true)
-            .spawn()
+        let exit_path = exit_file(log_path);
+        let _ = std::fs::remove_file(&exit_path);
+        self.run_cli(&self.exec_args(env, job, vars))
+            .await
             .context("starting exec")?;
-        let handle = format!(
-            "exec:{}:{}",
-            job.id,
-            self.exec_seq.fetch_add(1, Ordering::Relaxed)
-        );
-        self.execs
-            .lock()
-            .unwrap()
-            .insert(handle.clone(), (Some(child), env.clone()));
-        Ok(handle)
+        Ok(format!("exec|{env}|{}", exit_path.display()))
+    }
+
+    fn env_of(&self, handle: &Handle) -> Option<Handle> {
+        self.exec_env(handle)
     }
 
     async fn commit(&self, env: &Handle, image: &str) -> anyhow::Result<Option<u64>> {
@@ -670,7 +676,7 @@ mod tests {
             .collect();
         assert_eq!(
             ex.exec_args("abc123", &job2, &vars).join(" "),
-            "exec -w /work -e MLQ_JOB_ID=9 abc123 python train.py"
+            "exec -d -w /work -e MLQ_JOB_ID=9 abc123 sh -c exec >>\"/.mlq/$0.log\" 2>&1; \"$@\"; echo $? > \"/.mlq/$0.exit\" 7 python train.py"
         );
     }
 }

@@ -201,17 +201,6 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
         }
     }
     let env = env.unwrap();
-    let ws_str = ws.root.to_string_lossy().to_string();
-    let _ = state.store.set_container(job.id, &env).await;
-    let _ = state
-        .store
-        .set_started(job.id, &gpu_ids, NODE_ID, &ws_str)
-        .await;
-    let _ = state.store.touch_task(tid).await;
-    info!(task = tid, job = job.id, reused, gpus = ?gpu_ids, "step started");
-    publish_job(&state, job.id).await;
-    publish_task(&state, tid);
-
     let vars = step_env(&task, &job, &gpu_ids);
     let exec = match state.executor.exec(&env, &job, &ws, &vars, &log_path).await {
         Ok(h) => h,
@@ -220,17 +209,50 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
             return fail_early(&state, job.id, &format!("exec failed: {e}")).await;
         }
     };
-    let outcome = wait_job(&state, &job, &exec, token).await;
+    // The exec handle (environment + exit file) is persisted so a restarted daemon can re-wait.
+    let ws_str = ws.root.to_string_lossy().to_string();
+    let _ = state.store.set_container(job.id, &exec).await;
+    let _ = state
+        .store
+        .set_started(job.id, &gpu_ids, NODE_ID, &ws_str)
+        .await;
+    let _ = state.store.touch_task(tid).await;
+    info!(task = tid, job = job.id, reused, gpus = ?gpu_ids, "step started");
+    publish_job(&state, job.id).await;
+    publish_task(&state, tid);
+    job.container_id = Some(exec.clone());
+    job.started_at = Some(Utc::now());
+    job.base_snapshot_id = base_snap;
+    watch_step(&state, job, env, exec, token).await;
+}
+
+/// Wait for a started step, then save (success) or discard (anything else) the environment.
+/// Also used to re-attach to a step after a daemon restart; the task lock must be held.
+async fn watch_step(
+    state: &Arc<AppState>,
+    job: Job,
+    env: String,
+    exec: String,
+    token: tokio_util::sync::CancellationToken,
+) {
+    let tid = job.task_id.unwrap_or_default();
+    let base_snap = job.base_snapshot_id;
+    let image = job.image.clone();
+    let gpu_ids = job.gpu_ids.clone();
+    let outcome = wait_job(state, &job, &exec, token).await;
     let _ = state.executor.cleanup(&exec).await;
 
     // Save or discard the environment.
     let mut produced: Option<SnapshotId> = None;
     let mut note: Option<String> = None;
-    let task_now = state.store.task(tid).await.ok().flatten().unwrap_or(task);
+    let Some(task_now) = state.store.task(tid).await.ok().flatten() else {
+        let _ = state.executor.remove_env(&env).await;
+        return fail_early(state, job.id, "task vanished").await;
+    };
     if matches!(outcome, Outcome::Exited(0)) {
         let mut next_image = image.clone();
         if state.executor.supports_snapshots() {
-            match save_snapshot(&state, tid, base_snap, job.id, &env).await {
+            match save_snapshot(state, tid, base_snap, job.id, &env).await {
                 Ok((sid, tag)) => {
                     produced = Some(sid);
                     next_image = tag;
@@ -285,11 +307,11 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
         .store
         .set_job_snapshots(job.id, base_snap, produced)
         .await;
-    finish_job(&state, job.id, st, code, reason.as_deref()).await;
+    finish_job(state, job.id, st, code, reason.as_deref()).await;
     let _ = state.store.touch_task(tid).await;
     if state.config.retention.archive_dir.is_some() {
         if let Some(t) = state.store.task(tid).await.ok().flatten() {
-            match crate::retention::archive_task(&state, &t).await {
+            match crate::retention::archive_task(state, &t).await {
                 Ok(p) => {
                     let _ = state
                         .store
@@ -300,7 +322,7 @@ pub async fn run_step(state: Arc<AppState>, mut job: Job, gpu_ids: Vec<u32>) {
             }
         }
     }
-    publish_task(&state, tid);
+    publish_task(state, tid);
 }
 
 /// Commit the environment as the task's new HEAD and prune old snapshots.
@@ -383,20 +405,35 @@ pub fn spawn_warm_reaper(state: Arc<AppState>) {
     });
 }
 
-/// After a restart: running steps cannot be re-attached (their exec sessions died with the
-/// daemon), so they fail and their environments roll back. Warm environments that are still
-/// within their window are kept.
-pub async fn recover(state: &AppState) -> anyhow::Result<()> {
+/// After a restart: steps whose environment is still running are re-attached (they run
+/// detached inside the container and leave an exit file), the rest fail and roll back. Warm
+/// environments still within their window are kept.
+pub async fn recover(state: &Arc<AppState>) -> anyhow::Result<()> {
     for job in state.store.active_jobs().await? {
-        if job.task_id.is_none() || !job.state.is_active() {
+        let Some(tid) = job.task_id else { continue };
+        if !job.state.is_active() {
             continue;
         }
-        warn!(
-            job = job.id,
-            "task step was running when the daemon stopped; failing it"
-        );
-        if let Some(c) = &job.container_id {
-            let _ = state.executor.remove_env(c).await;
+        let exec = job.container_id.clone().unwrap_or_default();
+        let env = state.executor.env_of(&exec);
+        let alive = job.state == JobState::Running
+            && env.is_some()
+            && state.executor.is_alive(&exec).await.unwrap_or(false);
+        if alive {
+            info!(job = job.id, task = tid, "re-attaching to running step");
+            let st = state.clone();
+            let env = env.unwrap();
+            tokio::spawn(async move {
+                let lock = st.task_lock(tid);
+                let _g = lock.lock().await;
+                let token = st.cancel_token(job.id);
+                watch_step(&st, job, env, exec, token).await;
+            });
+            continue;
+        }
+        warn!(job = job.id, "task step cannot be re-attached; failing it");
+        if let Some(e) = env.or(job.container_id.clone()) {
+            let _ = state.executor.remove_env(&e).await;
         }
         state
             .store

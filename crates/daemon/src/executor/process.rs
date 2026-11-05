@@ -159,6 +159,16 @@ impl Executor for ProcessExecutor {
         Ok(h)
     }
 
+    fn env_of(&self, handle: &Handle) -> Option<Handle> {
+        let pid = handle.strip_prefix("pid:")?.parse::<i32>().ok()?;
+        self.env_pids
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, p)| **p == pid)
+            .map(|(e, _)| e.clone())
+    }
+
     async fn commit(&self, _env: &Handle, _image: &str) -> anyhow::Result<Option<u64>> {
         anyhow::bail!("snapshots need a container runtime (runtime = \"podman\")")
     }
