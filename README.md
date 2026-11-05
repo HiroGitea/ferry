@@ -159,6 +159,10 @@ ferry submit -c 8 -m 32G -g 1 -t 4h --upload ./src -- python src/train.py --lr 1
 ```
 
 ```bash
+ferry submit -g 1 --gpu-mem 40G -- python big.py   # only cards with >= 40 GB; small jobs get the small cards first
+```
+
+```bash
 ferry run -g 1 -- python eval.py         # submit, follow the log, wait; exit code is the job's
 ```
 

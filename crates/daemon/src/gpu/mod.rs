@@ -39,15 +39,32 @@ impl GpuProvider for NoGpu {
 /// dashboard has something to draw.
 pub struct FakeGpu {
     pub n: u32,
+    /// Memory per fake GPU (`fake:2` = two 80 GB cards; `fake:24G,48G` = one of each).
+    mem: Vec<u64>,
     busy: std::sync::Mutex<Vec<u32>>,
 }
 
 impl FakeGpu {
     pub fn new(n: u32) -> Self {
+        Self::with_mem(vec![80 << 30; n as usize])
+    }
+    pub fn with_mem(mem: Vec<u64>) -> Self {
         Self {
-            n,
+            n: mem.len() as u32,
+            mem,
             busy: std::sync::Mutex::new(vec![]),
         }
+    }
+    /// "2" or "24G,24G,48G".
+    pub fn parse(spec: &str) -> Self {
+        if let Ok(n) = spec.parse::<u32>() {
+            return Self::new(n);
+        }
+        Self::with_mem(
+            spec.split(',')
+                .filter_map(|s| ferry_core::parse_bytes(s).ok())
+                .collect(),
+        )
     }
 }
 
@@ -71,11 +88,12 @@ impl GpuProvider for FakeGpu {
                 } else {
                     0.0
                 };
+                let mem_total = self.mem[i as usize];
                 RawGpu {
                     index: i,
-                    name: "Fake GPU 80GB".into(),
+                    name: format!("Fake GPU {}GB", mem_total >> 30),
                     uuid: format!("GPU-fake-{i}"),
-                    mem_total: 80 << 30,
+                    mem_total,
                     mem_used: if on {
                         ((30.0 + 20.0 * wave) as u64) << 30
                     } else {
@@ -144,7 +162,7 @@ pub mod nvml {
 pub fn from_config(cfg: &Config) -> Arc<dyn GpuProvider> {
     let spec = cfg.gpu_provider.trim();
     if let Some(n) = spec.strip_prefix("fake:") {
-        return Arc::new(FakeGpu::new(n.parse().unwrap_or(1)));
+        return Arc::new(FakeGpu::parse(n));
     }
     match spec {
         "none" => Arc::new(NoGpu),

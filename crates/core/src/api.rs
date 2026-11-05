@@ -177,6 +177,9 @@ pub struct NodeRegistration {
     pub cpus_managed: f64,
     pub mem_managed: u64,
     pub gpus_managed: Vec<u32>,
+    /// Memory of each managed GPU (agents older than this field report none).
+    #[serde(default)]
+    pub gpu_mem: std::collections::BTreeMap<u32, u64>,
     pub scratch_root: String,
     pub default_image: String,
     pub mounts: Vec<String>,

@@ -133,6 +133,10 @@ ferry submit -c 8 -m 32G -g 1 -t 4h --upload ./src -- python src/train.py --lr 1
 ```
 
 ```bash
+ferry submit -g 1 --gpu-mem 40G -- python big.py   # 只要显存 ≥ 40G 的卡；没写的作业优先拿小卡
+```
+
+```bash
 ferry run -g 1 -- python eval.py         # 提交 + 跟随日志 + 等待，退出码与作业一致
 ```
 

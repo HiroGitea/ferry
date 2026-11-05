@@ -9,6 +9,9 @@ pub struct ResourceRequest {
     pub mem_bytes: u64,
     /// Number of whole GPUs.
     pub gpus: u32,
+    /// Minimum memory of each GPU (0 = any GPU), e.g. 40G to get only 48 GB cards.
+    #[serde(default)]
+    pub gpu_mem_bytes: u64,
 }
 
 impl Default for ResourceRequest {
@@ -17,6 +20,7 @@ impl Default for ResourceRequest {
             cpus: 2.0,
             mem_bytes: 8 * 1024 * 1024 * 1024,
             gpus: 0,
+            gpu_mem_bytes: 0,
         }
     }
 }
@@ -28,6 +32,8 @@ pub struct ResourceOverrides {
     pub cpus: Option<f64>,
     pub mem_bytes: Option<u64>,
     pub gpus: Option<u32>,
+    #[serde(default)]
+    pub gpu_mem_bytes: Option<u64>,
 }
 
 impl ResourceOverrides {
@@ -36,10 +42,14 @@ impl ResourceOverrides {
             cpus: self.cpus.unwrap_or(base.cpus),
             mem_bytes: self.mem_bytes.unwrap_or(base.mem_bytes),
             gpus: self.gpus.unwrap_or(base.gpus),
+            gpu_mem_bytes: self.gpu_mem_bytes.unwrap_or(base.gpu_mem_bytes),
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.cpus.is_none() && self.mem_bytes.is_none() && self.gpus.is_none()
+        self.cpus.is_none()
+            && self.mem_bytes.is_none()
+            && self.gpus.is_none()
+            && self.gpu_mem_bytes.is_none()
     }
 }
 
@@ -50,6 +60,22 @@ pub struct Inventory {
     pub mem_bytes: u64,
     /// GPU indices managed by the scheduler (others are left for direct host use).
     pub gpus: Vec<u32>,
+    /// Total memory of each managed GPU, by index (missing = unknown, treated as 0).
+    #[serde(default)]
+    pub gpu_mem: std::collections::BTreeMap<u32, u64>,
+}
+
+impl Inventory {
+    pub fn gpu_mem_of(&self, g: u32) -> u64 {
+        self.gpu_mem.get(&g).copied().unwrap_or(0)
+    }
+    /// GPUs big enough for a per-GPU memory requirement.
+    pub fn gpus_with_mem(&self, min: u64) -> usize {
+        self.gpus
+            .iter()
+            .filter(|g| self.gpu_mem_of(**g) >= min)
+            .count()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

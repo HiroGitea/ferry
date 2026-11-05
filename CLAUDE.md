@@ -35,7 +35,7 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 
 ## Commands
 - `cargo test --workspace`; `cargo fmt --all`
-- `make dev-daemon` (process executor + fake GPUs), then `FERRY_TOKEN=$(cat /tmp/ferry-dev/admin.token) ferry info`
+- `make dev-daemon` (process executor + fake GPUs; `gpu_provider = "fake:24G,48G"` gives mixed sizes), then `FERRY_TOKEN=$(cat /tmp/ferry-dev/admin.token) ferry info`
 - Snapshots need a container runtime: set `runtime = "podman"` (rootful works for local testing).
 - `make release` builds everything with the dashboard embedded; `make dist` packs it like a release asset.
 - `make lint` = what CI enforces (`cargo fmt --check`, `clippy -D warnings`).

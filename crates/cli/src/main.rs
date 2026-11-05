@@ -195,6 +195,9 @@ enum TaskCmd {
         mem: Option<String>,
         #[arg(short = 'g', long)]
         gpus: Option<u32>,
+        /// Minimum memory per GPU, e.g. 40G
+        #[arg(long = "gpu-mem")]
+        gpu_mem: Option<String>,
         /// Keep the environment running after a successful step, e.g. 10m (0 = off)
         #[arg(long, default_value = "10m")]
         keep_warm: String,
@@ -240,6 +243,9 @@ enum TaskCmd {
         mem: Option<String>,
         #[arg(short = 'g', long)]
         gpus: Option<u32>,
+        /// Minimum memory per GPU, e.g. 40G
+        #[arg(long = "gpu-mem")]
+        gpu_mem: Option<String>,
     },
     Close {
         id: i64,
@@ -872,6 +878,7 @@ async fn real_main() -> anyhow::Result<()> {
                     cpus,
                     mem,
                     gpus,
+                    gpu_mem,
                     keep_warm,
                     node,
                 } => {
@@ -882,6 +889,10 @@ async fn real_main() -> anyhow::Result<()> {
                             cpus: *cpus,
                             mem_bytes: mem.as_deref().map(ferry_core::parse_bytes).transpose()?,
                             gpus: *gpus,
+                            gpu_mem_bytes: gpu_mem
+                                .as_deref()
+                                .map(ferry_core::parse_bytes)
+                                .transpose()?,
                         },
                         keep_warm_secs: Some(secs(keep_warm)?),
                         node: node.clone(),
@@ -931,6 +942,7 @@ async fn real_main() -> anyhow::Result<()> {
                     cpus,
                     mem,
                     gpus,
+                    gpu_mem,
                 } => {
                     let req = ferry_core::api::UpdateTaskRequest {
                         name: name.clone(),
@@ -939,6 +951,10 @@ async fn real_main() -> anyhow::Result<()> {
                             cpus: *cpus,
                             mem_bytes: mem.as_deref().map(ferry_core::parse_bytes).transpose()?,
                             gpus: *gpus,
+                            gpu_mem_bytes: gpu_mem
+                                .as_deref()
+                                .map(ferry_core::parse_bytes)
+                                .transpose()?,
                         },
                     };
                     Some(c.update_task(*id, &req).await?)

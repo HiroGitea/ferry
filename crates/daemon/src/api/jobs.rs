@@ -92,26 +92,29 @@ fn estimate(state: &AppState, res: &ResourceRequest, active: &[Job]) -> String {
         .filter(|n| n.is_online())
         .map(|n| n.facts().inventory)
         .collect();
-    let inv = ferry_core::Inventory {
-        cpus: online.iter().map(|i| i.cpus).fold(0.0, f64::max),
-        mem_bytes: online.iter().map(|i| i.mem_bytes).max().unwrap_or(0),
-        gpus: online
-            .iter()
-            .max_by_key(|i| i.gpus.len())
-            .map(|i| i.gpus.clone())
-            .unwrap_or_default(),
-    };
-    if res.cpus > inv.cpus || res.mem_bytes > inv.mem_bytes || res.gpus as usize > inv.gpus.len() {
+    let max_cpus = online.iter().map(|i| i.cpus).fold(0.0, f64::max);
+    let max_mem = online.iter().map(|i| i.mem_bytes).max().unwrap_or(0);
+    let fits_gpu = |i: &ferry_core::Inventory| i.gpus_with_mem(res.gpu_mem_bytes);
+    let max_gpus = online.iter().map(fits_gpu).max().unwrap_or(0);
+    if res.cpus > max_cpus || res.mem_bytes > max_mem || res.gpus as usize > max_gpus {
         return format!(
-            "will never run: request exceeds managed inventory ({} cpus, {} mem, {} gpus)",
-            inv.cpus,
-            ferry_core::resource::format_bytes(inv.mem_bytes),
-            inv.gpus.len()
+            "will never run: request exceeds managed inventory ({} cpus, {} mem, {} gpus{})",
+            max_cpus,
+            ferry_core::resource::format_bytes(max_mem),
+            max_gpus,
+            if res.gpu_mem_bytes > 0 {
+                format!(
+                    " with >= {}",
+                    ferry_core::resource::format_bytes(res.gpu_mem_bytes)
+                )
+            } else {
+                String::new()
+            }
         );
     }
     let mut free_cpus: f64 = online.iter().map(|i| i.cpus).sum();
     let mut free_mem: u64 = online.iter().map(|i| i.mem_bytes).sum();
-    let mut free_gpus: usize = online.iter().map(|i| i.gpus.len()).sum();
+    let mut free_gpus: usize = online.iter().map(fits_gpu).sum();
     let mut queued_ahead = 0;
     for j in active {
         if j.state.is_active() {

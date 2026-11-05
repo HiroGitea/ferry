@@ -67,6 +67,23 @@ struct Free {
     cpus: f64,
     mem: u64,
     gpus: Vec<u32>,
+    gpu_mem: std::collections::BTreeMap<u32, u64>,
+}
+
+impl Free {
+    /// Free GPUs with at least `min` bytes, smallest first (best fit keeps big cards for jobs
+    /// that need them).
+    fn fitting(&self, min: u64) -> Vec<u32> {
+        let mem = |g: &u32| self.gpu_mem.get(g).copied().unwrap_or(0);
+        let mut v: Vec<u32> = self
+            .gpus
+            .iter()
+            .copied()
+            .filter(|g| mem(g) >= min)
+            .collect();
+        v.sort_by_key(|g| (mem(g), *g));
+        v
+    }
 }
 
 pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
@@ -91,6 +108,7 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                     cpus: n.inventory.cpus,
                     mem: n.inventory.mem_bytes,
                     gpus: n.inventory.gpus.clone(),
+                    gpu_mem: n.inventory.gpu_mem.clone(),
                 },
             )
         })
@@ -115,11 +133,6 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
     let biggest_mem = nodes
         .iter()
         .map(|n| n.inventory.mem_bytes)
-        .max()
-        .unwrap_or(0);
-    let biggest_gpus = nodes
-        .iter()
-        .map(|n| n.inventory.gpus.len())
         .max()
         .unwrap_or(0);
 
@@ -183,7 +196,7 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                 Some(x) => (
                     x.inventory.cpus,
                     x.inventory.mem_bytes,
-                    x.inventory.gpus.len(),
+                    x.inventory.gpus_with_mem(j.resources.gpu_mem_bytes),
                 ),
                 None => {
                     decisions.push(Decision::Reject {
@@ -193,7 +206,15 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
                     continue;
                 }
             },
-            None => (biggest_cpus, biggest_mem, biggest_gpus),
+            None => (
+                biggest_cpus,
+                biggest_mem,
+                nodes
+                    .iter()
+                    .map(|n| n.inventory.gpus_with_mem(j.resources.gpu_mem_bytes))
+                    .max()
+                    .unwrap_or(0),
+            ),
         };
         if j.resources.cpus > cap_cpus
             || j.resources.mem_bytes > cap_mem
@@ -202,10 +223,15 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
             decisions.push(Decision::Reject {
                 job_id: j.id,
                 reason: format!(
-                    "request ({} cpus, {} bytes, {} gpus) exceeds {} ({} cpus, {} bytes, {} gpus)",
+                    "request ({} cpus, {} bytes, {} gpus{}) exceeds {} ({} cpus, {} bytes, {} gpus)",
                     j.resources.cpus,
                     j.resources.mem_bytes,
                     j.resources.gpus,
+                    if j.resources.gpu_mem_bytes > 0 {
+                        format!(" with >= {} bytes each", j.resources.gpu_mem_bytes)
+                    } else {
+                        String::new()
+                    },
                     pinned
                         .as_deref()
                         .map(|n| format!("node {n}"))
@@ -255,6 +281,7 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
             continue;
         }
         let want = j.resources.gpus as usize;
+        let min_mem = j.resources.gpu_mem_bytes;
         let pinned = j
             .task_id
             .and_then(|t| task_nodes.get(&t).cloned())
@@ -272,7 +299,7 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
             let f = &free[i].2;
             j.resources.cpus <= f.cpus + 1e-9
                 && j.resources.mem_bytes <= f.mem
-                && want <= f.gpus.len()
+                && want <= f.fitting(min_mem).len()
         });
         let Some(i) = slot else {
             decisions.push(Decision::Wait {
@@ -289,11 +316,19 @@ pub fn schedule(input: SchedulerInput<'_>) -> Vec<Decision> {
         };
         let f = &mut free[i].2;
         let gpu_ids: Vec<u32> = match pref {
-            Some(p) if want > 0 && p.len() == want && p.iter().all(|g| f.gpus.contains(g)) => {
+            Some(p)
+                if want > 0
+                    && p.len() == want
+                    && p.iter().all(|g| f.fitting(min_mem).contains(g)) =>
+            {
                 f.gpus.retain(|g| !p.contains(g));
                 p.clone()
             }
-            _ => f.gpus.drain(..want).collect(),
+            _ => {
+                let picked: Vec<u32> = f.fitting(min_mem).into_iter().take(want).collect();
+                f.gpus.retain(|g| !picked.contains(g));
+                picked
+            }
         };
         f.cpus -= j.resources.cpus;
         f.mem -= j.resources.mem_bytes;
@@ -328,6 +363,7 @@ mod tests {
                 cpus,
                 mem_bytes: 1 << 30,
                 gpus,
+                gpu_mem_bytes: 0,
             },
             state,
             priority: 0,
@@ -364,6 +400,7 @@ mod tests {
             cpus: 8.0,
             mem_bytes: 64 << 30,
             gpus: vec![0, 1, 2, 3],
+            gpu_mem: Default::default(),
         }
     }
 
@@ -444,6 +481,46 @@ mod tests {
         assert_eq!(starts(&d), vec![(1, vec![0, 1])]);
     }
 
+    #[test]
+    fn gpu_memory_requirement_picks_big_cards_and_best_fit() {
+        // GPUs 0,1 are 24G; 2 is 48G.
+        let mut inv = inv();
+        inv.gpus = vec![0, 1, 2];
+        inv.gpu_mem = [(0, 24u64 << 30), (1, 24 << 30), (2, 48 << 30)].into();
+        let mut big = job(1, 1, 1.0, 1, JobState::Queued);
+        big.resources.gpu_mem_bytes = 40 << 30;
+        let small = job(2, 2, 1.0, 1, JobState::Queued);
+        let d = run(&inv, &[big.clone(), small], HashMap::new(), HashMap::new());
+        assert_eq!(starts(&d), vec![(1, vec![2]), (2, vec![0])]);
+
+        // Small jobs do not take the 48G card while a 24G one is free.
+        let d = run(
+            &inv,
+            &[job(3, 1, 1.0, 2, JobState::Queued)],
+            HashMap::new(),
+            HashMap::new(),
+        );
+        assert_eq!(starts(&d), vec![(3, vec![0, 1])]);
+
+        // Two 48G cards do not exist: rejected, not queued forever.
+        let mut two_big = big.clone();
+        two_big.id = 4;
+        two_big.resources.gpus = 2;
+        let d = run(&inv, &[two_big], HashMap::new(), HashMap::new());
+        assert!(matches!(&d[0], Decision::Reject { reason, .. } if reason.contains("with >=")));
+
+        // The 48G card is busy: the big job waits even though 24G cards are free.
+        let mut busy = job(5, 2, 1.0, 1, JobState::Running);
+        busy.gpu_ids = vec![2];
+        busy.node_id = Some("local".into());
+        let d = run(&inv, &[busy, big], HashMap::new(), HashMap::new());
+        assert!(
+            d.iter()
+                .any(|x| matches!(x, Decision::Wait { job_id: 1, .. })),
+            "{d:?}"
+        );
+    }
+
     fn starts(d: &[Decision]) -> Vec<(JobId, Vec<u32>)> {
         d.iter()
             .filter_map(|d| match d {
@@ -474,6 +551,7 @@ mod tests {
                     cpus: 4.0,
                     mem_bytes: 16 << 30,
                     gpus: vec![0],
+                    gpu_mem: Default::default(),
                 },
                 online: true,
             },
@@ -483,6 +561,7 @@ mod tests {
                     cpus: 8.0,
                     mem_bytes: 64 << 30,
                     gpus: vec![0, 1],
+                    gpu_mem: Default::default(),
                 },
                 online: true,
             },
@@ -492,6 +571,7 @@ mod tests {
                     cpus: 8.0,
                     mem_bytes: 64 << 30,
                     gpus: vec![0, 1],
+                    gpu_mem: Default::default(),
                 },
                 online: false,
             },
@@ -563,6 +643,7 @@ mod tests {
             cpus: 1.0,
             mem_bytes: 64 << 30,
             gpus: vec![],
+            gpu_mem: Default::default(),
         };
         let d = run(&small, &[a, b, c], Default::default(), fair);
         assert_eq!(starts(&d), vec![(3, vec![])]); // highest priority first
@@ -570,6 +651,7 @@ mod tests {
             cpus: 2.0,
             mem_bytes: 64 << 30,
             gpus: vec![],
+            gpu_mem: Default::default(),
         };
         let jobs = vec![
             job(1, 1, 1.0, 0, JobState::Queued),

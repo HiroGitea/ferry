@@ -31,6 +31,7 @@ struct JobRow {
     cpus: f64,
     mem_bytes: i64,
     gpus: i64,
+    gpu_mem_bytes: i64,
     state: String,
     priority: i64,
     depends_on: String,
@@ -67,6 +68,7 @@ impl From<JobRow> for Job {
                 cpus: r.cpus,
                 mem_bytes: r.mem_bytes as u64,
                 gpus: r.gpus as u32,
+                gpu_mem_bytes: r.gpu_mem_bytes.max(0) as u64,
             },
             state: JobState::parse(&r.state).unwrap_or(JobState::Failed),
             priority: r.priority as i32,
@@ -629,8 +631,8 @@ impl Store {
     pub async fn create_job(&self, j: &NewJob) -> anyhow::Result<Job> {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO jobs (user_id, name, image, command, env, cpus, mem_bytes, gpus, state, priority, depends_on,
-             array_index, time_limit_secs, submitted_at, gpu_ids, task_id, requested_node)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?) RETURNING id",
+             array_index, time_limit_secs, submitted_at, gpu_ids, task_id, requested_node, gpu_mem_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?) RETURNING id",
         )
         .bind(j.user_id)
         .bind(&j.name)
@@ -648,6 +650,7 @@ impl Store {
         .bind(Utc::now())
         .bind(j.task_id)
         .bind(&j.requested_node)
+        .bind(j.resources.gpu_mem_bytes as i64)
         .fetch_one(&self.pool)
         .await?;
         self.job(id).await?.context("job vanished after insert")
@@ -917,6 +920,7 @@ struct TaskRow {
     cpus: f64,
     mem_bytes: i64,
     gpus: i64,
+    gpu_mem_bytes: i64,
     keep_warm_secs: i64,
     state: String,
     head_snapshot_id: Option<i64>,
@@ -943,6 +947,7 @@ impl From<TaskRow> for Task {
                 cpus: r.cpus,
                 mem_bytes: r.mem_bytes as u64,
                 gpus: r.gpus as u32,
+                gpu_mem_bytes: r.gpu_mem_bytes.max(0) as u64,
             },
             keep_warm_secs: r.keep_warm_secs.max(0) as u64,
             state: TaskState::parse(&r.state).unwrap_or(TaskState::Closed),
@@ -1015,8 +1020,8 @@ impl Store {
     ) -> anyhow::Result<Task> {
         let now = Utc::now();
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO tasks (user_id, name, base_image, cpus, mem_bytes, gpus, keep_warm_secs, state, created_at, updated_at, node_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id",
+            "INSERT INTO tasks (user_id, name, base_image, cpus, mem_bytes, gpus, keep_warm_secs, state, created_at, updated_at, node_id, gpu_mem_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
@@ -1028,6 +1033,7 @@ impl Store {
         .bind(now)
         .bind(now)
         .bind(node_id)
+        .bind(res.gpu_mem_bytes as i64)
         .fetch_one(&self.pool)
         .await?;
         self.task(id).await?.context("task vanished after insert")
@@ -1105,10 +1111,11 @@ impl Store {
                 .await?;
         }
         if let Some(r) = res {
-            sqlx::query("UPDATE tasks SET cpus = ?, mem_bytes = ?, gpus = ? WHERE id = ?")
+            sqlx::query("UPDATE tasks SET cpus = ?, mem_bytes = ?, gpus = ?, gpu_mem_bytes = ? WHERE id = ?")
                 .bind(r.cpus)
                 .bind(r.mem_bytes as i64)
                 .bind(r.gpus as i64)
+                .bind(r.gpu_mem_bytes as i64)
                 .bind(id)
                 .execute(&self.pool)
                 .await?;

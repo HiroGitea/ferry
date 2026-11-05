@@ -272,7 +272,8 @@ pub fn local_inventory(cfg: &Config, gpu: &dyn GpuProvider) -> Inventory {
         .as_deref()
         .and_then(|m| ferry_core::parse_bytes(m).ok())
         .unwrap_or(host_mem.saturating_sub(cfg.reserve_mem_bytes()));
-    let detected: Vec<u32> = gpu.list().into_iter().map(|g| g.index).collect();
+    let listed = gpu.list();
+    let detected: Vec<u32> = listed.iter().map(|g| g.index).collect();
     let gpus = match &cfg.managed_gpus {
         Some(list) => list
             .iter()
@@ -281,10 +282,16 @@ pub fn local_inventory(cfg: &Config, gpu: &dyn GpuProvider) -> Inventory {
             .collect(),
         None => detected,
     };
+    let gpu_mem = listed
+        .iter()
+        .filter(|g| gpus.contains(&g.index))
+        .map(|g| (g.index, g.mem_total))
+        .collect();
     Inventory {
         cpus,
         mem_bytes: mem,
         gpus,
+        gpu_mem,
     }
 }
 
@@ -338,6 +345,7 @@ pub fn facts_from_registration(r: &NodeRegistration) -> NodeFacts {
             cpus: r.cpus_managed,
             mem_bytes: r.mem_managed,
             gpus: r.gpus_managed.clone(),
+            gpu_mem: r.gpu_mem.clone(),
         },
         scratch_root: PathBuf::from(&r.scratch_root),
         default_image: r.default_image.clone(),
@@ -373,6 +381,7 @@ pub fn registration(
         cpus_managed: f.inventory.cpus,
         mem_managed: f.inventory.mem_bytes,
         gpus_managed: f.inventory.gpus,
+        gpu_mem: f.inventory.gpu_mem,
         scratch_root: f.scratch_root.to_string_lossy().to_string(),
         default_image: f.default_image,
         mounts: f.mounts.iter().map(|m| m.container.clone()).collect(),

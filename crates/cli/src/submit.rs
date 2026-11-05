@@ -22,6 +22,9 @@ pub struct SubmitArgs {
     /// Number of GPUs [default: 0, or the task's default]
     #[arg(short = 'g', long)]
     pub gpus: Option<u32>,
+    /// Minimum memory per GPU, e.g. 40G (only cards at least this big) [default: any]
+    #[arg(long = "gpu-mem")]
+    pub gpu_mem: Option<String>,
     /// Run as the next step of this task (environment saved between steps)
     #[arg(short = 'T', long = "task")]
     pub task: Option<i64>,
@@ -144,6 +147,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
             args.cpus = args.cpus.or(parsed.cpus);
             args.mem = args.mem.or(parsed.mem);
             args.gpus = args.gpus.or(parsed.gpus);
+            args.gpu_mem = args.gpu_mem.or(parsed.gpu_mem);
             args.task = args.task.or(parsed.task);
             args.node = args.node.or(parsed.node);
             if args.image.is_none() {
@@ -200,6 +204,11 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
                 .map(ferry_core::parse_bytes)
                 .transpose()?,
             gpus: args.gpus,
+            gpu_mem_bytes: args
+                .gpu_mem
+                .as_deref()
+                .map(ferry_core::parse_bytes)
+                .transpose()?,
         },
         priority: args.priority,
         depends_on: args.depends_on.clone(),

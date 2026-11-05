@@ -18,6 +18,7 @@ export interface ResourceRequest {
   cpus: number;
   mem_bytes: number;
   gpus: number;
+  gpu_mem_bytes: number;
 }
 
 export interface Job {
@@ -104,6 +105,7 @@ export interface ResourceOverrides {
   cpus?: number | null;
   mem_bytes?: number | null;
   gpus?: number | null;
+  gpu_mem_bytes?: number | null;
 }
 
 export interface MetricSeries {

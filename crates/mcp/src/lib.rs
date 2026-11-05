@@ -76,6 +76,8 @@ pub struct SubmitParams {
     pub mem: Option<String>,
     /// Number of GPUs (default 0).
     pub gpus: Option<u32>,
+    /// Minimum memory of each GPU, e.g. "40G" to get only 48 GB cards (default: any GPU).
+    pub gpu_mem: Option<String>,
     /// Human readable job name.
     pub name: Option<String>,
     /// Environment variables.
@@ -104,6 +106,8 @@ pub struct RunParams {
     /// Memory limit, e.g. "16G".
     pub mem: Option<String>,
     pub gpus: Option<u32>,
+    /// Minimum memory of each GPU, e.g. "40G".
+    pub gpu_mem: Option<String>,
     pub name: Option<String>,
     pub env: Option<BTreeMap<String, String>>,
     /// Small text files to create under /work before start (path -> content).
@@ -130,6 +134,8 @@ pub struct CreateTaskParams {
     pub mem: Option<String>,
     /// Default number of GPUs for steps.
     pub gpus: Option<u32>,
+    /// Minimum memory of each GPU, e.g. "40G".
+    pub gpu_mem: Option<String>,
     /// Keep the environment running this many seconds after a successful step so the next step starts
     /// instantly (default 600).
     pub keep_warm_secs: Option<u64>,
@@ -214,6 +220,7 @@ fn build_request(
     cpus: Option<f64>,
     mem: Option<String>,
     gpus: Option<u32>,
+    gpu_mem: Option<String>,
     name: Option<String>,
     env: Option<BTreeMap<String, String>>,
     files: Option<BTreeMap<String, String>>,
@@ -224,6 +231,10 @@ fn build_request(
     task_id: Option<i64>,
 ) -> Result<SubmitJobRequest, String> {
     let mem_bytes = match mem {
+        Some(m) => Some(ferry_core::parse_bytes(&m).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let gpu_mem_bytes = match gpu_mem {
         Some(m) => Some(ferry_core::parse_bytes(&m).map_err(|e| e.to_string())?),
         None => None,
     };
@@ -240,6 +251,7 @@ fn build_request(
             cpus,
             mem_bytes,
             gpus,
+            gpu_mem_bytes,
         },
         priority: priority.unwrap_or(0),
         depends_on: depends_on.unwrap_or_default(),
@@ -329,6 +341,7 @@ impl FerryServer {
             p.cpus,
             p.mem,
             p.gpus,
+            p.gpu_mem,
             p.name,
             p.env,
             p.files,
@@ -363,6 +376,7 @@ impl FerryServer {
             p.cpus,
             p.mem,
             p.gpus,
+            p.gpu_mem,
             p.name,
             p.env,
             p.files,
@@ -602,6 +616,15 @@ impl FerryServer {
             Ok(m) => m,
             Err(e) => return Ok(err_result(e)),
         };
+        let gpu_mem_bytes = match p
+            .gpu_mem
+            .as_deref()
+            .map(ferry_core::parse_bytes)
+            .transpose()
+        {
+            Ok(m) => m,
+            Err(e) => return Ok(err_result(e)),
+        };
         let req = ferry_core::api::CreateTaskRequest {
             name: p.name,
             image: p.image,
@@ -609,6 +632,7 @@ impl FerryServer {
                 cpus: p.cpus,
                 mem_bytes,
                 gpus: p.gpus,
+                gpu_mem_bytes,
             },
             keep_warm_secs: Some(p.keep_warm_secs.unwrap_or(600)),
             node: None,
