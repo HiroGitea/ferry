@@ -137,9 +137,8 @@ pub fn decode_page(data: &[u8]) -> Vec<f32> {
     {
         return vec![];
     }
-    raw.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    let (chunks, _) = raw.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
 fn page_agg(page: &[f32; PAGE]) -> Agg {
