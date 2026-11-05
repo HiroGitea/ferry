@@ -16,6 +16,7 @@ pub mod notify;
 pub mod remote;
 pub mod retention;
 pub mod sched;
+pub mod shell;
 pub mod state;
 pub mod store;
 pub mod tasks;

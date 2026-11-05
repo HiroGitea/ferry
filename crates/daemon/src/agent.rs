@@ -334,6 +334,36 @@ async fn fs_exists(State(st): State<S>, Json(r): Json<PathReq>) -> R<bool> {
     Ok(Json(st.files.exists(&st.check_path(&r.path)?).await?))
 }
 
+#[derive(serde::Deserialize)]
+struct ShellReq {
+    handle: String,
+    work: String,
+    // Not `#[serde(flatten)]`: flattening breaks number parsing in query strings.
+    cmd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+async fn shell(
+    State(st): State<S>,
+    Query(r): Query<ShellReq>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Result<Response, AgentError> {
+    let work = st.check_path(&r.work)?;
+    let q = crate::shell::ShellQuery {
+        cmd: r.cmd,
+        cols: r.cols,
+        rows: r.rows,
+    };
+    let cmd = q.command()?;
+    let target = st
+        .executor
+        .interactive(&r.handle, &work, &cmd)
+        .ok_or_else(|| anyhow::anyhow!("this runtime has no interactive shell"))?;
+    let (cols, rows) = (q.cols.unwrap_or(80), q.rows.unwrap_or(24));
+    Ok(ws.on_upgrade(move |socket| crate::shell::bridge_pty(socket, target, cols, rows)))
+}
+
 pub fn router(st: S) -> Router {
     Router::new()
         .route("/image/present", post(image_present))
@@ -354,6 +384,7 @@ pub fn router(st: S) -> Router {
         .route("/env_idle", post(env_idle))
         .route("/remove_env", post(remove_env))
         .route("/usage", post(usage))
+        .route("/shell", get(shell))
         .route("/samples", post(samples))
         .route("/fs/ensure", post(fs_ensure))
         .route("/fs/write_files", post(fs_write_files))
@@ -374,6 +405,31 @@ pub fn router(st: S) -> Router {
         .with_state(st)
 }
 
+/// The local address the kernel would use to reach the control node (no packet is sent).
+fn ip_towards(control_url: &str) -> Option<String> {
+    let rest = control_url.split("://").nth(1).unwrap_or(control_url);
+    let hostport = rest.split('/').next()?;
+    let target = if hostport.contains(':') {
+        hostport.to_string()
+    } else {
+        format!("{hostport}:80")
+    };
+    use std::net::ToSocketAddrs;
+    let addr = target.to_socket_addrs().ok()?.next()?;
+    let sock = std::net::UdpSocket::bind(if addr.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })
+    .ok()?;
+    sock.connect(addr).ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    Some(match ip {
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+        v4 => v4.to_string(),
+    })
+}
+
 fn first_non_loopback_ip() -> Option<String> {
     // Prefer a tailscale address (100.64.0.0/10) when present.
     let text = std::fs::read_to_string("/proc/net/fib_trie").ok()?;
@@ -382,7 +438,12 @@ fn first_non_loopback_ip() -> Option<String> {
         let l = line.trim();
         if let Some(ip) = l.strip_prefix("|-- ").or_else(|| l.strip_prefix("+-- ")) {
             let ip = ip.split_whitespace().next().unwrap_or("");
-            if ip.starts_with("127.") || ip.ends_with(".0") || ip.ends_with(".255") || ip.is_empty()
+            // Prefix lines look like "+-- 10.0.0.0/8"; host addresses have no "/".
+            if ip.contains('/')
+                || ip.starts_with("127.")
+                || ip.ends_with(".0")
+                || ip.ends_with(".255")
+                || ip.is_empty()
             {
                 continue;
             }
@@ -426,7 +487,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let url = config.agent.advertise_url.clone().unwrap_or_else(|| {
         format!(
             "http://{}:{port}",
-            first_non_loopback_ip().unwrap_or_else(|| "127.0.0.1".into())
+            ip_towards(&config.agent.control_url)
+                .or_else(first_non_loopback_ip)
+                .unwrap_or_else(|| "127.0.0.1".into())
         )
     });
     info!(node = %config.cluster.node_name, control = %config.agent.control_url, %url, "agent starting");

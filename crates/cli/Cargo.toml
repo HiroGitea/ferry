@@ -9,6 +9,9 @@ name = "ferry"
 path = "src/main.rs"
 
 [dependencies]
+tokio-tungstenite.workspace = true
+crossterm.workspace = true
+futures.workspace = true
 ferry-core.workspace = true
 ferry-client.workspace = true
 ferry-daemon.workspace = true

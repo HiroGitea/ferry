@@ -288,6 +288,30 @@ impl Executor for ContainerExecutor {
         &self.binary
     }
 
+    fn interactive(
+        &self,
+        handle: &Handle,
+        _work: &std::path::Path,
+        cmd: &[String],
+    ) -> Option<crate::shell::ShellTarget> {
+        let target = self.exec_env(handle).unwrap_or_else(|| handle.clone());
+        let mut args: Vec<String> = vec![
+            "exec".into(),
+            "-it".into(),
+            "-w".into(),
+            "/work".into(),
+            "-e".into(),
+            "TERM=xterm-256color".into(),
+            target,
+        ];
+        args.extend(cmd.iter().cloned());
+        Some(crate::shell::ShellTarget {
+            program: self.binary.clone(),
+            args,
+            cwd: None,
+        })
+    }
+
     fn supports_snapshots(&self) -> bool {
         true
     }

@@ -67,6 +67,8 @@ pub fn spawn(state: Arc<AppState>) {
                 .into_iter()
                 .filter(|j| j.state == JobState::Running && !j.gpu_ids.is_empty())
                 .filter(|j| !cfg.exempt_users.contains(&j.user_name))
+                // `ferry shell` sessions are idle by nature while someone types.
+                .filter(|j| j.env.get("FERRY_INTERACTIVE").map(String::as_str) != Some("1"))
                 .collect();
             warned.retain(|id, _| running.iter().any(|j| j.id == *id));
             let now = Utc::now();

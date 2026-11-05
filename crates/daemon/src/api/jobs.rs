@@ -765,3 +765,52 @@ pub async fn train_metrics(
     m.truncated = truncated;
     Ok(Json(m))
 }
+
+/// Interactive shell (WebSocket) inside a running job or task step. See `shell.rs` for the protocol.
+pub async fn shell(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<JobId>,
+    Query(q): Query<crate::shell::ShellQuery>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let job = load_job(&state, &user, id).await?;
+    if job.state != JobState::Running {
+        return Err(ApiError::Conflict(format!(
+            "job {id} is {}, not running",
+            job.state
+        )));
+    }
+    let handle = job
+        .container_id
+        .clone()
+        .ok_or_else(|| ApiError::Conflict(format!("job {id} has no container yet")))?;
+    let cmd = q
+        .command()
+        .map_err(|e| ApiError::BadRequest(format!("cmd: {e}")))?;
+    let node = state.node_for_job(&job).map_err(ApiError::Internal)?;
+    let work = job
+        .workspace_path
+        .as_ref()
+        .map(|p| Workspace::open(p.into()).work())
+        .unwrap_or_default();
+    let (cols, rows) = (q.cols.unwrap_or(80), q.rows.unwrap_or(24));
+    tracing::info!(job = id, user = %user.0.name, cmd = ?cmd, "shell opened");
+    if let Some(remote) = &node.remote {
+        let query = serde_urlencoded::to_string([
+            ("handle", handle.as_str()),
+            ("work", &work.to_string_lossy()),
+            ("cmd", &serde_json::to_string(&cmd).unwrap_or_default()),
+            ("cols", &cols.to_string()),
+            ("rows", &rows.to_string()),
+        ])
+        .map_err(|e| ApiError::Internal(e.into()))?;
+        let (url, token) = remote.agent.shell_url(&query);
+        return Ok(ws.on_upgrade(move |socket| crate::shell::proxy_to_agent(socket, url, token)));
+    }
+    let target = node
+        .executor
+        .interactive(&handle, &work, &cmd)
+        .ok_or_else(|| ApiError::BadRequest("this runtime has no interactive shell".into()))?;
+    Ok(ws.on_upgrade(move |socket| crate::shell::bridge_pty(socket, target, cols, rows)))
+}

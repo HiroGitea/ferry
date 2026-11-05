@@ -210,6 +210,25 @@ ferry run --task 3 -- python train.py                        # starts from snaps
 ferry task show 3 ; ferry task checkout 3 1 ; ferry task close 3
 ```
 
+### Interactive shell
+
+```bash
+ferry shell <job-id>                     # terminal inside a running job (or task step)
+```
+
+```bash
+ferry shell <job-id> -- nvidia-smi       # one command, exit code passed through
+```
+
+```bash
+ferry shell --task 3                     # a shell in the task's environment, as a step
+```
+
+`--task` starts a "shell" step with the task's resources (8 h limit, `-t` to change). Install
+things, debug, then exit: you are asked whether to save the environment as a snapshot (it becomes
+HEAD, like a successful step) or roll it back. Shell steps are exempt from idle-GPU reclaim. Works
+on agents too; the control node relays the terminal.
+
 ### Archives
 
 ```text

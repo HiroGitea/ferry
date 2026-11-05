@@ -77,6 +77,20 @@ impl ProcessExecutor {
 
 #[async_trait]
 impl Executor for ProcessExecutor {
+    fn interactive(
+        &self,
+        _handle: &Handle,
+        work: &std::path::Path,
+        cmd: &[String],
+    ) -> Option<crate::shell::ShellTarget> {
+        // Development runtime: no isolation, just a process in the job's work dir.
+        Some(crate::shell::ShellTarget {
+            program: cmd.first()?.clone(),
+            args: cmd[1..].to_vec(),
+            cwd: Some(work.to_path_buf()),
+        })
+    }
+
     fn name(&self) -> &str {
         "process"
     }

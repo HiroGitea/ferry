@@ -73,6 +73,10 @@ impl Client {
         &self.base
     }
 
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     /// The server root (what the dashboard is served from), without `/api/v1`.
     pub fn server_url(&self) -> &str {
         self.base.trim_end_matches("/api/v1")

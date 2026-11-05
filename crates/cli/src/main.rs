@@ -1,5 +1,6 @@
 mod config;
 mod fmt;
+mod shell;
 mod submit;
 
 use std::path::PathBuf;
@@ -81,6 +82,21 @@ enum Cmd {
     Cancel { ids: Vec<i64> },
     /// Release a held job
     Release { id: i64 },
+    /// Interactive shell in a running job, or in a task's environment (saved as a snapshot on exit)
+    Shell {
+        /// Job (or task step) id
+        #[arg(required_unless_present = "task")]
+        job: Option<i64>,
+        /// Open a shell in this task's environment instead
+        #[arg(short = 'T', long, conflicts_with = "job")]
+        task: Option<i64>,
+        /// Time limit of the shell step for --task
+        #[arg(short = 't', long, default_value = "8h")]
+        time: String,
+        /// Command to run instead of a login shell
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
     /// Admin: copy the database to the backup directory now
     Backup,
     /// Admin: kill a running job and put it back in the queue
@@ -700,6 +716,24 @@ async fn real_main() -> anyhow::Result<()> {
             } else {
                 fmt::print_curves(&m);
             }
+        }
+        Cmd::Shell {
+            job,
+            task,
+            time,
+            cmd,
+        } => {
+            let c = client(&cli)?;
+            let cmd = (!cmd.is_empty()).then_some(cmd.as_slice());
+            let code = match (job, task) {
+                (_, Some(t)) => {
+                    let secs = ferry_core::parse_duration_secs(time)?;
+                    shell::task_shell(&c, *t, cmd, secs).await?
+                }
+                (Some(j), None) => shell::attach(&c, *j, cmd, true).await?,
+                (None, None) => unreachable!("clap requires one"),
+            };
+            std::process::exit(code.clamp(0, 255));
         }
         Cmd::Backup => {
             let c = client(&cli)?;

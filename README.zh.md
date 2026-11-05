@@ -183,6 +183,22 @@ ferry run --task 3 -- python train.py                        # 从存档 1 开�
 ferry task show 3 ; ferry task checkout 3 1 ; ferry task close 3
 ```
 
+### 交互式终端
+
+```bash
+ferry shell <作业id>                     # 进入正在运行的作业（或任务步骤）的终端
+```
+
+```bash
+ferry shell <作业id> -- nvidia-smi       # 只跑一条命令，退出码原样返回
+```
+
+```bash
+ferry shell --task 3                     # 在任务环境里开一个终端，作为一个步骤运行
+```
+
+`--task` 会用任务的资源启动一个 "shell" 步骤（默认限时 8 小时，`-t` 修改）。装软件、调试完退出时会问是否把环境存为存档（像成功的步骤一样成为 HEAD），否则回滚。shell 步骤不受 GPU 空闲回收影响。计算节点上的作业也能用，由控制节点转发终端。
+
 ### 存档文件
 
 ```text

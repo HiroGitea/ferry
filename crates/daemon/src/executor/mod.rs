@@ -97,6 +97,16 @@ pub trait Executor: Send + Sync {
     async fn remove_env(&self, env: &Handle) -> anyhow::Result<()>;
     /// Cumulative resource counters of a job/environment, if available.
     async fn usage(&self, handle: &Handle) -> Option<Usage>;
+    /// How to run `cmd` interactively inside a running job or step (`work` = the host
+    /// workspace's work dir). `None` if this executor cannot (remote nodes proxy instead).
+    fn interactive(
+        &self,
+        _handle: &Handle,
+        _work: &std::path::Path,
+        _cmd: &[String],
+    ) -> Option<crate::shell::ShellTarget> {
+        None
+    }
 }
 
 pub fn from_config(cfg: &Config) -> anyhow::Result<Arc<dyn Executor>> {

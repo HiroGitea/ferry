@@ -27,6 +27,18 @@ pub struct Agent {
     token: String,
 }
 
+impl Agent {
+    /// WebSocket URL of the agent's shell endpoint, and the token to send with it.
+    pub fn shell_url(&self, query: &str) -> (String, String) {
+        let ws = if let Some(rest) = self.base.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else {
+            format!("ws://{}", self.base.trim_start_matches("http://"))
+        };
+        (format!("{ws}/shell?{query}"), self.token.clone())
+    }
+}
+
 // ---- wire types shared with agent.rs
 
 #[derive(Serialize, Deserialize)]

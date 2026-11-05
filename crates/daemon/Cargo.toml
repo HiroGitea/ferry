@@ -15,6 +15,7 @@ nvml = ["dep:nvml-wrapper"]
 embed-web = []
 
 [dependencies]
+tokio-tungstenite.workspace = true
 ferry-core.workspace = true
 ferry-mcp.workspace = true
 anyhow.workspace = true
@@ -47,6 +48,7 @@ reqwest.workspace = true
 tempfile.workspace = true
 hex = "0.4"
 libc = "0.2"
+serde_urlencoded = "0.7"
 rust-embed.workspace = true
 mime_guess.workspace = true
 nvml-wrapper = { workspace = true, optional = true }
