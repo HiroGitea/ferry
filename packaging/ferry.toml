@@ -117,3 +117,21 @@ node_timeout_secs = 30
 # telegram_bot_token = "123456:ABC..."     # from @BotFather; enables Telegram for everyone
 # telegram_api = "https://api.telegram.org" # or a reverse proxy if Telegram is blocked
 # public_url = "http://gpu1.tailnet:7070"   # dashboard links in messages
+
+[idle]
+# Jobs holding GPUs at <= util_threshold % get a warning after warn_after, and are cancelled
+# cancel_after later if the GPUs stayed idle. Owners are notified both times.
+# enabled = true
+# util_threshold = 2.0
+# warn_after = "30m"
+# cancel_after = "30m"
+# exempt_users = []
+
+[backup]
+# Copies ferry.db (users, tokens, jobs, tasks) to <retention.archive_dir>/_ferry-backup unless
+# dir is set. Restore: stop ferryd, copy a backup over <data_dir>/ferry.db, start it again.
+# enabled = true
+# dir = "/mnt/nas/ferry-backup"
+# interval = "24h"
+# keep = 14
+# include_metrics = false

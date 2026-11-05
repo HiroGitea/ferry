@@ -326,6 +326,9 @@ impl Client {
     pub async fn usage(&self, q: &UsageQuery) -> Result<Vec<UserUsage>, ClientError> {
         self.send(self.req(Method::GET, "/usage").query(q)).await
     }
+    pub async fn backup(&self) -> Result<serde_json::Value, ClientError> {
+        self.send(self.req(Method::POST, "/backup")).await
+    }
     pub async fn sweep(&self) -> Result<serde_json::Value, ClientError> {
         self.send(self.req(Method::POST, "/retention/sweep")).await
     }

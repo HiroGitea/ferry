@@ -359,6 +359,15 @@ impl Store {
         self.user_by_id(user_id).await
     }
 
+    /// Consistent online copy of the database (`VACUUM INTO`).
+    pub async fn backup_to(&self, dest: &Path) -> anyhow::Result<()> {
+        sqlx::query("VACUUM INTO ?")
+            .bind(dest.to_string_lossy().to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // ---- invites ----
 
     /// Returns (plaintext code, invite).

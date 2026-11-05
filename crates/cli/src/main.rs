@@ -81,6 +81,8 @@ enum Cmd {
     Cancel { ids: Vec<i64> },
     /// Release a held job
     Release { id: i64 },
+    /// Admin: copy the database to the backup directory now
+    Backup,
     /// Admin: kill a running job and put it back in the queue
     Preempt { ids: Vec<i64> },
     /// Training curves from /out/metrics.jsonl (one JSON object per line): last/min/max per metric
@@ -697,6 +699,13 @@ async fn real_main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&m)?);
             } else {
                 fmt::print_curves(&m);
+            }
+        }
+        Cmd::Backup => {
+            let c = client(&cli)?;
+            let r = c.backup().await?;
+            for f in r["files"].as_array().into_iter().flatten() {
+                println!("{}", f.as_str().unwrap_or_default());
             }
         }
         Cmd::Preempt { ids } => {

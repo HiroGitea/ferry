@@ -109,6 +109,7 @@ pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/invites/{id}", delete(admin::delete_invite))
         .route("/usage", get(admin::usage))
         .route("/retention/sweep", post(admin::sweep))
+        .route("/backup", post(admin::backup))
         .route("/events", get(sse::events))
         .route("/tasks", get(tasks::list).post(tasks::create))
         .route(

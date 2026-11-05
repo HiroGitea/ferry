@@ -93,6 +93,9 @@ A PKGBUILD is in `packaging/` (`cd packaging && makepkg -si`).
 | `[archive]` | `.7z` on task close, which snapshot images to include, compression level |
 | `[container]` | `user`, `userns = "keep-id"` (the NFS export must allow that uid), network, `shm_size` |
 | `[metrics]` | Collection interval and retention per tier |
+| `[notify]` | Telegram bot token, dashboard URL for links in messages |
+| `[idle]` | Warn and then cancel jobs whose GPUs stay idle (`warn_after`, `cancel_after`, `exempt_users`) |
+| `[backup]` | Daily copy of `ferry.db` to the NAS (`interval`, `keep`); `ferry backup` runs one now |
 | `[cluster]` | `node_name`, `node_token` for agents, `local_node = false` for a pure control node |
 | `allowed_images` | Image allow-list; build the default image with `images/Containerfile` |
 

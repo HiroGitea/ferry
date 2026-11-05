@@ -417,6 +417,18 @@ impl MetricsHub {
     }
 
     /// Flush everything in memory (used on shutdown and in tests).
+    /// Copy metrics.db with `VACUUM INTO` (no-op when metrics are disabled).
+    pub async fn backup_to(&self, dest: &std::path::Path) -> anyhow::Result<bool> {
+        let Some(pool) = &self.pool else {
+            return Ok(false);
+        };
+        sqlx::query("VACUUM INTO ?")
+            .bind(dest.to_string_lossy().to_string())
+            .execute(pool)
+            .await?;
+        Ok(true)
+    }
+
     pub async fn flush_all(&self) -> anyhow::Result<()> {
         let mut writes = Vec::new();
         {

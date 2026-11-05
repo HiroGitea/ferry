@@ -349,7 +349,8 @@ async fn launch(state: Arc<AppState>, mut job: Job, node_id: String, gpu_ids: Ve
 
 pub(crate) enum Outcome {
     Exited(i32),
-    Cancelled,
+    /// Cancelled; `Some(reason)` when the daemon did it (idle GPUs), `None` = by the user.
+    Cancelled(Option<String>),
     /// Killed by an admin preemption; goes back to the queue.
     Preempted,
     Timeout,
@@ -393,7 +394,7 @@ pub(crate) async fn wait_job(
             if state.take_preempt(job.id) {
                 Outcome::Preempted
             } else {
-                Outcome::Cancelled
+                Outcome::Cancelled(state.take_cancel_reason(job.id))
             }
         }
         _ = timeout => {
@@ -413,10 +414,10 @@ pub(crate) fn outcome_state(outcome: Outcome) -> (JobState, Option<i32>, Option<
             Some("exit code 137: killed (SIGKILL) — usually the memory limit was reached; request more memory".to_string()),
         ),
         Outcome::Exited(c) => (JobState::Failed, Some(c), Some(format!("exit code {c}"))),
-        Outcome::Cancelled => (
+        Outcome::Cancelled(reason) => (
             JobState::Cancelled,
             None,
-            Some("cancelled by user".to_string()),
+            Some(reason.unwrap_or_else(|| "cancelled by user".to_string())),
         ),
         Outcome::Preempted => (
             JobState::Queued,

@@ -41,6 +41,8 @@ pub struct FakeGpu {
     pub n: u32,
     /// Memory per fake GPU (`fake:2` = two 80 GB cards; `fake:24G,48G` = one of each).
     mem: Vec<u64>,
+    /// Allocated GPUs report 0% (to exercise idle reclaim): `fake:2:idle`.
+    always_idle: bool,
     busy: std::sync::Mutex<Vec<u32>>,
 }
 
@@ -52,11 +54,17 @@ impl FakeGpu {
         Self {
             n: mem.len() as u32,
             mem,
+            always_idle: false,
             busy: std::sync::Mutex::new(vec![]),
         }
     }
-    /// "2" or "24G,24G,48G".
+    /// "2" or "24G,24G,48G", optionally followed by ":idle".
     pub fn parse(spec: &str) -> Self {
+        if let Some(base) = spec.strip_suffix(":idle") {
+            let mut g = Self::parse(base);
+            g.always_idle = true;
+            return g;
+        }
         if let Ok(n) = spec.parse::<u32>() {
             return Self::new(n);
         }
@@ -80,7 +88,7 @@ impl GpuProvider for FakeGpu {
         let t = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
         (0..self.n)
             .map(|i| {
-                let on = busy.contains(&i);
+                let on = busy.contains(&i) && !self.always_idle;
                 let wave = ((t / 20.0 + i as f64).sin() * 0.5 + 0.5) as f32;
                 let jitter = (((t * 7.3 + i as f64 * 13.0).sin()) * 0.5 + 0.5) as f32;
                 let util = if on {

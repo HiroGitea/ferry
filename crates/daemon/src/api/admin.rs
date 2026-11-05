@@ -409,3 +409,15 @@ pub async fn register(
         ))),
     }
 }
+
+/// Admin: back up the database now.
+pub async fn backup(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+) -> ApiResult<serde_json::Value> {
+    user.require_admin()?;
+    let files = crate::backup::run_once(&state)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "files": files })))
+}

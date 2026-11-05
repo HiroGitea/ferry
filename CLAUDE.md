@@ -30,6 +30,8 @@ Containerised GPU/CPU job scheduler for a shared ML server. Rust workspace + Rea
 - Preemption (admin): `state.request_preempt` marks the job, the watcher maps the kill to
   `Outcome::Preempted` → `store.requeue` (state queued again, workspace kept). Victims for
   `submit --preempt` are chosen in `api/jobs.rs::preemption_victims` (lowest priority, youngest first).
+- Background loops in `lib.rs::run`: sched, retention, liveness, warm reaper, metrics collector,
+  notify (job completions), idle (GPU idle warn/cancel via `state.request_cancel_because`), backup.
 - Notifications: `notify.rs` listens for terminal `JobUpdated` events; other code calls `notify::send` (always delivered).
 - Never mount user-chosen host paths into containers; only the job's `work/`, `out/` and configured `mounts`.
 - Results flow: `/out` on SSD → archived to `retention.archive_dir` at job end → SSD copy deleted by sweep

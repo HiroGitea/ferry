@@ -4,10 +4,12 @@ pub mod agent;
 pub mod api;
 pub mod archive;
 pub mod auth;
+pub mod backup;
 pub mod config;
 pub mod events;
 pub mod executor;
 pub mod gpu;
+pub mod idle;
 pub mod metrics;
 pub mod node;
 pub mod notify;
@@ -75,6 +77,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     tasks::spawn_warm_reaper(state.clone());
     metrics::collector::spawn(state.clone());
     notify::spawn(state.clone());
+    idle::spawn(state.clone());
+    backup::spawn(state.clone());
 
     let app = api::router(state.clone());
     let listener = tokio::net::TcpListener::bind(&listen)

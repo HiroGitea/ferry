@@ -73,6 +73,9 @@ sudo cp packaging/ferryd.service /etc/systemd/system/ && sudo systemctl daemon-r
 | `[archive]` | 关闭任务时生成 .7z、包含哪些快照镜像、压缩级别 |
 | `[container]` | `user`、`userns = "keep-id"`（NFS 导出要允许这个 uid）、网络、`shm_size` |
 | `[metrics]` | 采集间隔、各层保留时间 |
+| `[notify]` | Telegram 机器人 token、消息里链接用的面板地址 |
+| `[idle]` | GPU 长时间空闲的作业先提醒、再取消（`warn_after`、`cancel_after`、`exempt_users`） |
+| `[backup]` | 每天把 `ferry.db` 备份到 NAS（`interval`、`keep`）；`ferry backup` 立即备份一次 |
 | `[cluster]` | `node_name`、给 agent 用的 `node_token`、`local_node = false` 表示纯控制节点 |
 | `allowed_images` | 镜像白名单；默认镜像可用 `images/Containerfile` 构建 |
 

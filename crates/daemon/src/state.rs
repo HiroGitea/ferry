@@ -22,6 +22,8 @@ pub struct AppState {
     pub cancels: Mutex<HashMap<JobId, CancellationToken>>,
     /// Jobs being cancelled by an admin preemption: they go back to the queue instead of ending.
     pub preempting: Mutex<std::collections::HashSet<JobId>>,
+    /// Reason recorded when the daemon (not the owner) cancels a job, e.g. idle GPUs.
+    pub cancel_reasons: Mutex<HashMap<JobId, String>>,
     /// One lock per task: serialises steps, checkout, close and warm-expiry of a task.
     pub task_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     pub metrics: Arc<crate::metrics::MetricsHub>,
@@ -43,6 +45,7 @@ impl AppState {
             wake: Notify::new(),
             cancels: Mutex::new(HashMap::new()),
             preempting: Mutex::new(Default::default()),
+            cancel_reasons: Mutex::new(HashMap::new()),
             task_locks: Mutex::new(HashMap::new()),
             metrics,
             started_at: chrono::Utc::now(),
@@ -107,6 +110,19 @@ impl AppState {
             self.preempting.lock().unwrap().remove(&id);
             false
         }
+    }
+    /// Cancel a running job on the daemon's behalf with a reason other than "cancelled by user".
+    pub fn request_cancel_because(&self, id: JobId, reason: String) -> bool {
+        self.cancel_reasons.lock().unwrap().insert(id, reason);
+        if self.request_cancel(id) {
+            true
+        } else {
+            self.cancel_reasons.lock().unwrap().remove(&id);
+            false
+        }
+    }
+    pub fn take_cancel_reason(&self, id: JobId) -> Option<String> {
+        self.cancel_reasons.lock().unwrap().remove(&id)
     }
     pub fn take_preempt(&self, id: JobId) -> bool {
         self.preempting.lock().unwrap().remove(&id)

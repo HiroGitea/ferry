@@ -40,7 +40,77 @@ pub struct Config {
     pub fair_share: FairShareConfig,
     pub metrics: crate::metrics::MetricsConfig,
     pub notify: NotifyConfig,
+    pub idle: IdleConfig,
+    pub backup: BackupConfig,
     pub log_level: String,
+}
+
+/// Periodic copies of the control database (users, tokens, jobs, tasks) to the NAS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BackupConfig {
+    pub enabled: bool,
+    /// Default: `<retention.archive_dir>/_ferry-backup`; no archive dir and no `dir` = off.
+    pub dir: Option<PathBuf>,
+    /// How often, e.g. "24h".
+    pub interval: String,
+    /// Backups kept; older ones are deleted.
+    pub keep: usize,
+    /// Also copy metrics.db (can be large).
+    pub include_metrics: bool,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dir: None,
+            interval: "24h".into(),
+            keep: 14,
+            include_metrics: false,
+        }
+    }
+}
+
+impl Config {
+    pub fn backup_dir(&self) -> Option<PathBuf> {
+        if !self.backup.enabled {
+            return None;
+        }
+        self.backup.dir.clone().or_else(|| {
+            self.retention
+                .archive_dir
+                .as_ref()
+                .map(|d| d.join("_ferry-backup"))
+        })
+    }
+}
+
+/// Jobs that hold GPUs without using them: warn the owner, then cancel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IdleConfig {
+    pub enabled: bool,
+    /// GPU utilisation (%) at or below which a job counts as idle.
+    pub util_threshold: f32,
+    /// Warn after the GPUs were idle this long, e.g. "30m".
+    pub warn_after: String,
+    /// Cancel this long after the warning if they stayed idle, e.g. "30m".
+    pub cancel_after: String,
+    /// Users whose jobs are never reclaimed.
+    pub exempt_users: Vec<String>,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            util_threshold: 2.0,
+            warn_after: "30m".into(),
+            cancel_after: "30m".into(),
+            exempt_users: vec![],
+        }
+    }
 }
 
 /// Server side of notifications; users choose their own channels.
@@ -220,6 +290,8 @@ impl Default for Config {
             fair_share: FairShareConfig::default(),
             metrics: crate::metrics::MetricsConfig::default(),
             notify: NotifyConfig::default(),
+            idle: IdleConfig::default(),
+            backup: BackupConfig::default(),
             log_level: "info".into(),
         }
     }
