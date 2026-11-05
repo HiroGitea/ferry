@@ -258,6 +258,7 @@ fn build_request(
         array: None,
         time_limit_secs,
         hold: false,
+        preempt: false,
         files: files.unwrap_or_default(),
         dry_run,
         task_id,

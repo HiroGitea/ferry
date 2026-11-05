@@ -377,6 +377,7 @@ export const api = {
   job: (id: number) => request<Job>("GET", `/jobs/${id}`),
   cancel: (id: number) => request<Job>("DELETE", `/jobs/${id}`),
   release: (id: number) => request<Job>("POST", `/jobs/${id}/release`),
+  preempt: (id: number) => request<Job>("POST", `/jobs/${id}/preempt`),
   log: (id: number, p: { tail?: number; offset?: number }) =>
     request<LogChunk>("GET", `/jobs/${id}/log${qs(p)}`),
   result: (id: number) => request<JobResult>("GET", `/jobs/${id}/result`),

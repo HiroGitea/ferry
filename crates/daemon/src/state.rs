@@ -20,6 +20,8 @@ pub struct AppState {
     pub wake: Notify,
     /// Cancellation tokens of running jobs.
     pub cancels: Mutex<HashMap<JobId, CancellationToken>>,
+    /// Jobs being cancelled by an admin preemption: they go back to the queue instead of ending.
+    pub preempting: Mutex<std::collections::HashSet<JobId>>,
     /// One lock per task: serialises steps, checkout, close and warm-expiry of a task.
     pub task_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     pub metrics: Arc<crate::metrics::MetricsHub>,
@@ -40,6 +42,7 @@ impl AppState {
             nodes,
             wake: Notify::new(),
             cancels: Mutex::new(HashMap::new()),
+            preempting: Mutex::new(Default::default()),
             task_locks: Mutex::new(HashMap::new()),
             metrics,
             started_at: chrono::Utc::now(),
@@ -93,6 +96,20 @@ impl AppState {
             .entry(task_id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// Kill a running job and put it back in the queue. Returns false if it has no watcher.
+    pub fn request_preempt(&self, id: JobId) -> bool {
+        self.preempting.lock().unwrap().insert(id);
+        if self.request_cancel(id) {
+            true
+        } else {
+            self.preempting.lock().unwrap().remove(&id);
+            false
+        }
+    }
+    pub fn take_preempt(&self, id: JobId) -> bool {
+        self.preempting.lock().unwrap().remove(&id)
     }
 
     pub fn remove_cancel(&self, id: JobId) {

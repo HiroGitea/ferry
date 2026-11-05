@@ -350,6 +350,8 @@ async fn launch(state: Arc<AppState>, mut job: Job, node_id: String, gpu_ids: Ve
 pub(crate) enum Outcome {
     Exited(i32),
     Cancelled,
+    /// Killed by an admin preemption; goes back to the queue.
+    Preempted,
     Timeout,
     Error(String),
 }
@@ -388,7 +390,11 @@ pub(crate) async fn wait_job(
         _ = token.cancelled() => {
             let _ = node.executor.kill(&handle).await;
             let _ = wait.await;
-            Outcome::Cancelled
+            if state.take_preempt(job.id) {
+                Outcome::Preempted
+            } else {
+                Outcome::Cancelled
+            }
         }
         _ = timeout => {
             let _ = node.executor.kill(&handle).await;
@@ -412,6 +418,11 @@ pub(crate) fn outcome_state(outcome: Outcome) -> (JobState, Option<i32>, Option<
             None,
             Some("cancelled by user".to_string()),
         ),
+        Outcome::Preempted => (
+            JobState::Queued,
+            None,
+            Some("preempted by an admin; back in the queue".to_string()),
+        ),
         Outcome::Timeout => (
             JobState::Timeout,
             None,
@@ -429,6 +440,25 @@ pub(crate) async fn finish_job(
     code: Option<i32>,
     reason: Option<&str>,
 ) {
+    if st == JobState::Queued {
+        // Preempted: back to the queue with its resources released and the owner told.
+        if let Err(e) = state.store.requeue(job_id, reason).await {
+            error!(job = job_id, "db: {e:#}");
+        }
+        state.remove_cancel(job_id);
+        info!(job = job_id, "job preempted and requeued");
+        if let Ok(Some(job)) = state.store.job(job_id).await {
+            let n = crate::notify::Notification::for_job(
+                crate::notify::Kind::Preempted,
+                &job,
+                "an admin needed the resources; it will start again when there is room",
+            );
+            crate::notify::send_now(state, job.user_id, n).await;
+        }
+        publish_job(state, job_id).await;
+        state.wake.notify_one();
+        return;
+    }
     if let Err(e) = state.store.set_finished(job_id, st, code, reason).await {
         error!(job = job_id, "db: {e:#}");
     }

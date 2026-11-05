@@ -58,6 +58,9 @@ pub struct SubmitArgs {
     /// Validate and show the scheduling estimate without submitting
     #[arg(long)]
     pub dry_run: bool,
+    /// Admin: if it does not fit now, kill and requeue the lowest-priority running jobs
+    #[arg(long)]
+    pub preempt: bool,
     /// Command (after `--`), or a single script path whose `#FERRY` lines carry options
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
@@ -219,6 +222,7 @@ pub fn build_request(args: &SubmitArgs) -> anyhow::Result<(SubmitJobRequest, Vec
             .map(ferry_core::parse_duration_secs)
             .transpose()?,
         hold: args.hold || !uploads.is_empty(),
+        preempt: args.preempt,
         files: BTreeMap::new(),
         dry_run: args.dry_run,
         task_id: args.task,

@@ -211,6 +211,38 @@ pub async fn submit(
             None => return Err(ApiError::BadRequest(format!("dependency {dep} not found"))),
         }
     }
+    if req.preempt && !user.is_admin() {
+        return Err(ApiError::Forbidden("only admins can preempt".into()));
+    }
+    // Who has to go so this request fits (admin --preempt). Decided before creating the job so a
+    // dry run can show it.
+    let victims = if req.preempt && !req.hold && req.array.is_none() {
+        // Admins' jobs are never victims.
+        let protected: std::collections::HashSet<i64> = state
+            .store
+            .list_users()
+            .await?
+            .into_iter()
+            .filter(|u| u.role == ferry_core::Role::Admin)
+            .map(|u| u.id)
+            .collect();
+        preemption_victims(&state, &resources, &active, req.node.as_deref(), &protected)
+    } else {
+        vec![]
+    };
+    let est = if victims.is_empty() {
+        est
+    } else {
+        format!(
+            "will preempt {} job(s): {}",
+            victims.len(),
+            victims
+                .iter()
+                .map(|v| format!("{} ({}, {})", v.id, v.name, v.user_name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     if req.dry_run {
         return Ok(Json(SubmitJobResponse {
             dry_run: true,
@@ -218,6 +250,13 @@ pub async fn submit(
             estimate: est,
         }));
     }
+    // The preempting job must outrank its victims in the queue.
+    let priority = if victims.is_empty() {
+        req.priority
+    } else {
+        req.priority
+            .max(victims.iter().map(|v| v.priority).max().unwrap_or(0) + 1)
+    };
     let image = match &task {
         Some(t) => crate::tasks::head_image(&state, t).await.0,
         None => req
@@ -249,7 +288,7 @@ pub async fn submit(
                 } else {
                     JobState::Queued
                 },
-                priority: req.priority,
+                priority,
                 depends_on: req.depends_on.clone(),
                 array_index: idx,
                 time_limit_secs: req.time_limit_secs,
@@ -257,6 +296,11 @@ pub async fn submit(
                 requested_node: req.node.clone(),
             })
             .await?;
+        for v in &victims {
+            if state.request_preempt(v.id) {
+                tracing::info!(victim = v.id, for_job = job.id, by = %user.0.name, "preempting");
+            }
+        }
         // Inline files are written now so they are present even if the job is held.
         if !req.files.is_empty() {
             match &task {
@@ -571,4 +615,101 @@ pub async fn upload_files(
     };
     let n = files.unpack_tar_gz(&root, body).await?;
     Ok(Json(serde_json::json!({ "job_id": id, "files": n })))
+}
+
+/// Admin preemption: the smallest set of running jobs on one node whose resources, added to
+/// what is free there, fit `res`. Lowest priority first, then the youngest. Jobs of the admin
+/// themselves and other admins' jobs are left alone.
+fn preemption_victims(
+    state: &AppState,
+    res: &ResourceRequest,
+    active: &[Job],
+    pinned: Option<&str>,
+    protected: &std::collections::HashSet<i64>,
+) -> Vec<Job> {
+    let mut best: Option<Vec<Job>> = None;
+    for node in state.nodes.all().into_iter().filter(|n| n.is_online()) {
+        if pinned.is_some_and(|p| p != node.id) {
+            continue;
+        }
+        let inv = node.facts().inventory;
+        let running: Vec<&Job> = active
+            .iter()
+            .filter(|j| j.state.is_active() && j.node_id.as_deref() == Some(node.id.as_str()))
+            .collect();
+        let mut cpus = inv.cpus - running.iter().map(|j| j.resources.cpus).sum::<f64>();
+        let mut mem = inv
+            .mem_bytes
+            .saturating_sub(running.iter().map(|j| j.resources.mem_bytes).sum());
+        let used: Vec<u32> = running.iter().flat_map(|j| j.gpu_ids.clone()).collect();
+        let mut gpus: Vec<u32> = inv
+            .gpus
+            .iter()
+            .copied()
+            .filter(|g| !used.contains(g) && inv.gpu_mem_of(*g) >= res.gpu_mem_bytes)
+            .collect();
+        let fits = |c: f64, m: u64, g: &[u32]| {
+            res.cpus <= c + 1e-9 && res.mem_bytes <= m && res.gpus as usize <= g.len()
+        };
+        if fits(cpus, mem, &gpus) {
+            return vec![]; // it fits already; nobody has to go
+        }
+        let mut candidates: Vec<&Job> = running
+            .iter()
+            .copied()
+            .filter(|j| !protected.contains(&j.user_id))
+            .collect();
+        candidates.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then(b.started_at.cmp(&a.started_at))
+        });
+        let mut chosen = vec![];
+        for j in candidates {
+            cpus += j.resources.cpus;
+            mem += j.resources.mem_bytes;
+            gpus.extend(
+                j.gpu_ids
+                    .iter()
+                    .copied()
+                    .filter(|g| inv.gpu_mem_of(*g) >= res.gpu_mem_bytes),
+            );
+            chosen.push(j.clone());
+            if fits(cpus, mem, &gpus) {
+                break;
+            }
+        }
+        if fits(cpus, mem, &gpus) && best.as_ref().is_none_or(|b| chosen.len() < b.len()) {
+            best = Some(chosen);
+        }
+    }
+    best.unwrap_or_default()
+}
+
+/// Admin: kill a running job and put it back in the queue.
+pub async fn preempt(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<JobId>,
+) -> ApiResult<Job> {
+    user.require_admin()?;
+    let job = state
+        .store
+        .job(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("job {id}")))?;
+    if !matches!(
+        job.state,
+        JobState::Running | JobState::Starting | JobState::Pulling
+    ) {
+        return Err(ApiError::Conflict(format!("job {id} is {}", job.state)));
+    }
+    if !state.request_preempt(id) {
+        return Err(ApiError::Conflict(format!(
+            "job {id} has no watcher; cancel it instead"
+        )));
+    }
+    tracing::info!(job = id, by = %user.0.name, "preempting");
+    publish_job(&state, id).await;
+    Ok(Json(state.store.job(id).await?.unwrap()))
 }

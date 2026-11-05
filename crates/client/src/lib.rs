@@ -143,6 +143,10 @@ impl Client {
         self.send(self.req(Method::DELETE, &format!("/jobs/{id}")))
             .await
     }
+    pub async fn preempt(&self, id: JobId) -> Result<Job, ClientError> {
+        self.send(self.req(Method::POST, &format!("/jobs/{id}/preempt")))
+            .await
+    }
     pub async fn release(&self, id: JobId) -> Result<Job, ClientError> {
         self.send(self.req(Method::POST, &format!("/jobs/{id}/release")))
             .await

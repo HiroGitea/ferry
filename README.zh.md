@@ -148,6 +148,20 @@ ferry submit train.sh                    # 脚本里的 "#FERRY -g 1 -m 16G" 行
 ferry queue -a ; ferry logs <id> -f ; ferry cancel <id> ; ferry result <id> --download ./out
 ```
 
+### 抢占（管理员）
+
+作业默认只排队。管理员可以从正在运行的作业手里拿资源：被挤掉的作业会被结束、通知主人，然后以原优先级重新排队：
+
+```bash
+ferry submit -g 2 --preempt -- python urgent.py     # 挤掉优先级最低的作业，直到放得下
+```
+
+```bash
+ferry preempt <id>                                   # 手动把某个作业放回队列
+```
+
+任务的步骤被抢占时和失败一样，回滚到上一个存档。
+
 ### 多步骤任务
 
 ```bash

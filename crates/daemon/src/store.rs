@@ -879,6 +879,19 @@ impl Store {
         Ok(())
     }
 
+    /// Put a running job back in the queue (preemption): release node/GPUs, keep the workspace.
+    pub async fn requeue(&self, id: JobId, reason: Option<&str>) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE jobs SET state = 'queued', started_at = NULL, finished_at = NULL, exit_code = NULL,
+             gpu_ids = '[]', node_id = NULL, container_id = NULL, reason = ? WHERE id = ?",
+        )
+        .bind(reason)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_finished(
         &self,
         id: JobId,

@@ -86,6 +86,7 @@ pub fn api_v1(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/jobs", post(jobs::submit).get(jobs::list))
         .route("/jobs/{id}", get(jobs::get).delete(jobs::cancel))
         .route("/jobs/{id}/release", post(jobs::release))
+        .route("/jobs/{id}/preempt", post(jobs::preempt))
         .route("/jobs/{id}/log", get(jobs::log))
         .route("/jobs/{id}/wait", get(jobs::wait))
         .route("/jobs/{id}/result", get(jobs::result))

@@ -140,6 +140,11 @@ export function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) 
     mutationFn: () => api.cancel(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
   });
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const preempt = useMutation({
+    mutationFn: () => api.preempt(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
   const j = job.data;
   const terminal = j ? TERMINAL.includes(j.state) : false;
 
@@ -155,6 +160,15 @@ export function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) 
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {j && ACTIVE.includes(j.state) && me.data?.user.role === "admin" && (
+            <Button
+              title="Kill it now and put it back in the queue (the owner is notified)"
+              onClick={() => confirm(`Preempt job ${id}? It is killed and requeued.`) && preempt.mutate()}
+              disabled={preempt.isPending}
+            >
+              Preempt
+            </Button>
+          )}
           {j && !terminal && (
             <Button variant="danger" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
               <Square size={12} /> Cancel

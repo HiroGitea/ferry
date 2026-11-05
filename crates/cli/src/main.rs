@@ -81,6 +81,8 @@ enum Cmd {
     Cancel { ids: Vec<i64> },
     /// Release a held job
     Release { id: i64 },
+    /// Admin: kill a running job and put it back in the queue
+    Preempt { ids: Vec<i64> },
     /// Print (or follow) a job's log
     Logs {
         id: i64,
@@ -680,6 +682,18 @@ async fn real_main() -> anyhow::Result<()> {
             let c = client(&cli)?;
             let j = c.release(*id).await?;
             println!("job {} -> {}", j.id, j.state);
+        }
+        Cmd::Preempt { ids } => {
+            let c = client(&cli)?;
+            for id in ids {
+                let j = c.preempt(*id).await?;
+                println!(
+                    "job {} -> {} ({})",
+                    j.id,
+                    j.state,
+                    j.reason.as_deref().unwrap_or("")
+                );
+            }
         }
         Cmd::Logs { id, follow, tail } => {
             let c = client(&cli)?;

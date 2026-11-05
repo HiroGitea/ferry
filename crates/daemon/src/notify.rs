@@ -221,17 +221,20 @@ pub async fn deliver(state: &AppState, settings: &NotifySettings, n: &Notificati
     errors
 }
 
-/// Fire-and-forget delivery to a user (always sent, regardless of the on_* preferences).
+/// Deliver to a user now (always sent, regardless of the on_* preferences).
+pub async fn send_now(state: &AppState, user_id: UserId, n: Notification) {
+    let settings = match state.store.notify_settings(user_id).await {
+        Ok(s) => s,
+        Err(e) => return warn!(error = %e, "loading notification settings"),
+    };
+    for e in deliver(state, &settings, &n).await {
+        warn!(user_id, error = %e, kind = n.kind.as_str(), "notification failed");
+    }
+}
+
+/// Fire-and-forget variant of [`send_now`].
 pub fn send(state: Arc<AppState>, user_id: UserId, n: Notification) {
-    tokio::spawn(async move {
-        let settings = match state.store.notify_settings(user_id).await {
-            Ok(s) => s,
-            Err(e) => return warn!(error = %e, "loading notification settings"),
-        };
-        for e in deliver(&state, &settings, &n).await {
-            warn!(user_id, error = %e, kind = n.kind.as_str(), "notification failed");
-        }
-    });
+    tokio::spawn(async move { send_now(&state, user_id, n).await });
 }
 
 fn wanted(s: &NotifySettings, job: &Job) -> bool {

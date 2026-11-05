@@ -174,6 +174,21 @@ ferry submit train.sh                    # "#FERRY -g 1 -m 16G" lines in the scr
 ferry queue -a ; ferry logs <id> -f ; ferry cancel <id> ; ferry result <id> --download ./out
 ```
 
+### Preemption (admins)
+
+Jobs normally only queue. An admin can take resources from running jobs; the victims are killed,
+their owners notified, and they go back to the queue with their original priority:
+
+```bash
+ferry submit -g 2 --preempt -- python urgent.py     # evicts the lowest-priority jobs until it fits
+```
+
+```bash
+ferry preempt <id>                                   # requeue one job by hand
+```
+
+A preempted task step rolls back to its last snapshot like any failed step.
+
 ### Tasks
 
 ```bash

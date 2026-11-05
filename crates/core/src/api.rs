@@ -46,6 +46,10 @@ pub struct SubmitJobRequest {
     /// Run on this node only (default: any node with free resources).
     #[serde(default)]
     pub node: Option<String>,
+    /// Admin only: if the job does not fit right now, preempt the lowest-priority running jobs
+    /// (they are killed and requeued) until it does.
+    #[serde(default)]
+    pub preempt: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
