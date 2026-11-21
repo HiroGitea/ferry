@@ -3,7 +3,7 @@
 
 data_dir = "/var/lib/ferry"          # SSD: job workspaces live under <data_dir>/users
 runtime = "podman"
-default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
+default_image = "docker.io/pytorch/pytorch:2.15.0-cuda13.2-cudnn9-runtime"   # see ferry.toml for choosing a tag
 reserve_cpus = 2
 reserve_mem = "8G"
 # managed_gpus = [0, 1]
@@ -17,8 +17,9 @@ container = "/data"
 read_only = true
 
 [container]
-user = "1000:1000"
-userns = "keep-id"
+# Rootless podman: container root is the agent's `ferry` account on the host. With docker use
+# that account's own uid:gid instead. See packaging/ferry.toml for the details.
+user = "0:0"
 shm_size = "8g"
 
 [cluster]

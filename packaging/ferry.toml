@@ -11,11 +11,16 @@ data_dir = "/var/lib/ferry"
 # scratch_root = "/ssd/ferry-scratch"
 
 # Container runtime: "podman" (recommended, rootless), "docker", or "process" (no isolation,
-# development only).
+# development only). For docker the daemon's account must be in the `docker` group, GPUs need
+# `nvidia-ctk runtime configure --runtime=docker`, and [container] user must be set (see below).
 runtime = "podman"
 
 # Image used when a job does not name one. Pre-pull it: ferry image pull <ref>
-default_image = "docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
+# The tag decides which GPUs work: RTX 50-series need PyTorch >= 2.7 built against CUDA >= 12.8;
+# the cuda13 builds need a recent driver and Turing (RTX 20 / T4) or newer cards — use a cuda12.6
+# tag for older ones. These images keep PyTorch in the system Python, where pip wants
+# --break-system-packages; images/Containerfile builds a default image with that already set.
+default_image = "docker.io/pytorch/pytorch:2.15.0-cuda13.2-cudnn9-runtime"
 
 # Restrict images to this list (exact references, or prefixes ending in '/'). Empty = any image.
 allowed_images = [
@@ -51,18 +56,25 @@ read_only = true
 # read_only = false
 
 [container]
-# Run the job as this uid:gid inside the container. With rootless podman and userns = "keep-id"
-# the container user maps to the daemon's `ferry` account on the host, which is what NFS sees;
-# make sure the NAS export grants that uid read access (or use all_squash/anon uid mapping).
-user = "1000:1000"
-userns = "keep-id"
-# slirp4netns (default), pasta, bridge, none (no network at all), host
-network = "slirp4netns"
+# uid:gid of the job process inside the container.
+#   rootless podman: "0:0". Container root is the daemon's `ferry` account on the host: it owns
+#     what jobs write to /work and /out, and it is the uid the NAS sees — make sure the export
+#     grants it read access (or use all_squash/anon uid mapping). Jobs can apt/pip install inside
+#     their environment and still have no rights on the host beyond that account.
+#   docker: the uid:gid of the account running ferryd (`id ferry`). With "0:0" job output would
+#     belong to the real root and the daemon could not clean it up.
+user = "0:0"
+# Leave userns unset. "keep-id" is not needed with user = "0:0", and when podman's OCI runtime is
+# runc it stops every GPU container from starting ("failed to set MOUNT_ATTR_IDMAP").
+# pasta, bridge, none (no network at all), host. Unset = the runtime's own default (pasta for
+# rootless podman, bridge for docker). podman >= 6 no longer supports slirp4netns.
+# network = "pasta"
 pids_limit = 4096
 # PyTorch DataLoader workers need more than podman's 64M default.
 shm_size = "8g"
 # "cdi" => --device nvidia.com/gpu=N (podman + nvidia-container-toolkit CDI spec)
 # "docker" => --gpus device=N
+# "auto" picks by runtime.
 gpu_flag_style = "auto"
 extra_args = []
 

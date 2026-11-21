@@ -71,7 +71,7 @@ sudo cp packaging/ferryd.service /etc/systemd/system/ && sudo systemctl daemon-r
 | `[[mounts]]` | NAS 数据集，如 `host = "/mnt/nas/datasets"`、`container = "/data"`、只读 |
 | `[retention]` | NAS 上的 `archive_dir`、`keep_days`、`max_scratch` |
 | `[archive]` | 关闭任务时生成 .7z、包含哪些快照镜像、压缩级别 |
-| `[container]` | `user`、`userns = "keep-id"`（NFS 导出要允许这个 uid）、网络、`shm_size` |
+| `[container]` | `user`：rootless Podman 用 `"0:0"`（容器内 root 就是守护进程账户，NFS 导出要允许这个账户的 uid），Docker 用守护进程账户自己的 `uid:gid`；网络、`shm_size` |
 | `[metrics]` | 采集间隔、各层保留时间 |
 | `[notify]` | Telegram 机器人 token、消息里链接用的面板地址 |
 | `[idle]` | GPU 长时间空闲的作业先提醒、再取消（`warn_after`、`cancel_after`、`exempt_users`） |

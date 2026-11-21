@@ -91,7 +91,7 @@ A PKGBUILD is in `packaging/` (`cd packaging && makepkg -si`).
 | `[[mounts]]` | Datasets on the NAS, e.g. `host = "/mnt/nas/datasets"`, `container = "/data"`, read-only |
 | `[retention]` | `archive_dir` on the NAS, `keep_days`, `max_scratch` |
 | `[archive]` | `.7z` on task close, which snapshot images to include, compression level |
-| `[container]` | `user`, `userns = "keep-id"` (the NFS export must allow that uid), network, `shm_size` |
+| `[container]` | `user`: `"0:0"` with rootless Podman (container root is the daemon's account, which is the uid the NFS export must allow), the daemon's own `uid:gid` with Docker; network, `shm_size` |
 | `[metrics]` | Collection interval and retention per tier |
 | `[notify]` | Telegram bot token, dashboard URL for links in messages |
 | `[idle]` | Warn and then cancel jobs whose GPUs stay idle (`warn_after`, `cancel_after`, `exempt_users`) |

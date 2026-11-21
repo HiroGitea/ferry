@@ -138,12 +138,17 @@ pub struct Mount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContainerConfig {
-    /// `--user` for the container process, e.g. "1000:1000". Leave empty to use the image default.
+    /// `--user` for the container process. Leave empty to use the image default.
+    /// Rootless podman: "0:0" — container root is the daemon's account on the host.
+    /// Docker (rootful): the daemon account's own "uid:gid", so it can clean up what jobs write.
     pub user: Option<String>,
-    /// `--userns` value (rootless podman: "keep-id" maps the daemon user to the container user).
+    /// `--userns` value; normally unset. "keep-id" is not needed with `user = "0:0"`, and under
+    /// runc it stops GPU containers from starting (podman idmaps the CDI mounts, which a rootless
+    /// runtime may not do).
     pub userns: Option<String>,
-    /// podman/docker network mode: "slirp4netns", "pasta", "bridge", "none", "host".
-    pub network: String,
+    /// `--network` value: "pasta", "bridge", "none", "host", ... Unset = the runtime's own default
+    /// (pasta for rootless podman, bridge for docker). podman >= 6 no longer has "slirp4netns".
+    pub network: Option<String>,
     pub pids_limit: u32,
     /// Shared memory size for the container (PyTorch DataLoader needs more than the 64M default).
     pub shm_size: String,
@@ -302,7 +307,7 @@ impl Default for ContainerConfig {
         Self {
             user: None,
             userns: None,
-            network: "slirp4netns".into(),
+            network: None,
             pids_limit: 4096,
             shm_size: "8g".into(),
             gpu_flag_style: "auto".into(),

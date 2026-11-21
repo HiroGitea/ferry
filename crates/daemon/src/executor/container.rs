@@ -109,8 +109,13 @@ impl ContainerExecutor {
             self.cfg.pids_limit.to_string(),
             "--shm-size".into(),
             self.cfg.shm_size.clone(),
-            "--network".into(),
-            self.cfg.network.clone(),
+        ]);
+        // Unset = the runtime's default (pasta for rootless podman, bridge for docker).
+        if let Some(net) = &self.cfg.network {
+            a.push("--network".into());
+            a.push(net.clone());
+        }
+        a.extend([
             "-v".into(),
             format!("{}:/work", c.workspace.work().display()),
             "-v".into(),
@@ -276,6 +281,30 @@ pub fn exit_file(log_path: &std::path::Path) -> std::path::PathBuf {
     log_path.with_extension("exit")
 }
 
+/// `Size` from `images --format json`: bytes (podman) or a decimal-unit string such as "3.38GB"
+/// (docker).
+fn image_size(v: &serde_json::Value) -> u64 {
+    if let Some(n) = v.as_u64() {
+        return n;
+    }
+    let s = v.as_str().unwrap_or("").trim();
+    let idx = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(idx);
+    let mult = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        _ => return 0,
+    };
+    num.parse::<f64>()
+        .map(|n| (n * mult).round() as u64)
+        .unwrap_or(0)
+}
+
 fn parse_exec(handle: &str) -> Option<(String, std::path::PathBuf)> {
     let rest = handle.strip_prefix("exec|")?;
     let (env, exit) = rest.split_once('|')?;
@@ -317,8 +346,9 @@ impl Executor for ContainerExecutor {
     }
 
     async fn image_present(&self, image: &str) -> anyhow::Result<bool> {
+        // `image inspect` rather than `image exists`: the latter is podman-only.
         let status = Command::new(&self.binary)
-            .args(["image", "exists", image])
+            .args(["image", "inspect", image])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -356,7 +386,7 @@ impl Executor for ContainerExecutor {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
-            let size = v.get("Size").and_then(|x| x.as_u64()).unwrap_or(0);
+            let size = v.get("Size").map(image_size).unwrap_or(0);
             let created = v
                 .get("CreatedAt")
                 .or(v.get("Created"))
@@ -509,8 +539,13 @@ impl Executor for ContainerExecutor {
     }
 
     async fn commit(&self, env: &Handle, image: &str) -> anyhow::Result<Option<u64>> {
-        self.run_cli(&["commit".into(), "-q".into(), env.clone(), image.to_string()])
-            .await?;
+        let mut args = vec!["commit".to_string()];
+        if !self.is_docker() {
+            // podman prints layer progress without it; docker has no such flag.
+            args.push("-q".into());
+        }
+        args.extend([env.clone(), image.to_string()]);
+        self.run_cli(&args).await?;
         let size = self
             .run_cli(&[
                 "image".into(),
@@ -612,9 +647,7 @@ mod tests {
     use crate::workspace::Workspace;
     use ferry_core::{Job, JobState, ResourceRequest};
 
-    #[test]
-    fn builds_podman_args() {
-        let ex = ContainerExecutor::new("podman".into(), ContainerConfig::default());
+    fn sample_spec() -> RunSpec {
         let job = Job {
             id: 7,
             user_id: 1,
@@ -650,7 +683,7 @@ mod tests {
             snapshot_id: None,
             requested_node: None,
         };
-        let spec = RunSpec {
+        RunSpec {
             job,
             workspace: Workspace::open("/scratch/alice/jobs/7".into()),
             gpu_ids: vec![1, 3],
@@ -663,11 +696,19 @@ mod tests {
                 .into_iter()
                 .collect(),
             log_path: "/scratch/alice/jobs/7/job.log".into(),
-        };
+        }
+    }
+
+    #[test]
+    fn builds_podman_args() {
+        let ex = ContainerExecutor::new("podman".into(), ContainerConfig::default());
+        let spec = sample_spec();
         let args = ex.run_args(&spec);
         let s = args.join(" ");
         assert!(s.starts_with("run -d --name ferry-7 "));
         assert!(s.contains("--cpus 2 --memory 1073741824b"));
+        // No network/user flags unless configured: the runtime's defaults apply.
+        assert!(!s.contains("--network") && !s.contains("--user"));
         assert!(s.contains(
             "-v /scratch/alice/jobs/7/work:/work -v /scratch/alice/jobs/7/out:/out -w /work"
         ));
@@ -705,5 +746,31 @@ mod tests {
             ex.exec_args("abc123", &job2, &vars).join(" "),
             "exec -d -w /work -e FERRY_JOB_ID=9 abc123 sh -c exec >>\"/.ferry/$0.log\" 2>&1; \"$@\"; echo $? > \"/.ferry/$0.exit\" 7 python train.py"
         );
+    }
+
+    #[test]
+    fn builds_docker_args() {
+        let cfg = ContainerConfig {
+            user: Some("1000:1000".into()),
+            network: Some("bridge".into()),
+            ..ContainerConfig::default()
+        };
+        let ex = ContainerExecutor::new("docker".into(), cfg);
+        let s = ex.run_args(&sample_spec()).join(" ");
+        assert!(s.contains("--network bridge"));
+        assert!(s.contains("--user 1000:1000"));
+        assert!(s.contains("--gpus \"device=1,3\""));
+        assert!(!s.contains("nvidia.com/gpu") && !s.contains("--userns"));
+    }
+
+    #[test]
+    fn image_sizes_from_both_runtimes() {
+        use serde_json::json;
+        assert_eq!(image_size(&json!(6279901819u64)), 6279901819);
+        assert_eq!(image_size(&json!("3.38GB")), 3_380_000_000);
+        assert_eq!(image_size(&json!("117MB")), 117_000_000);
+        assert_eq!(image_size(&json!("1.2kB")), 1200);
+        assert_eq!(image_size(&json!("0B")), 0);
+        assert_eq!(image_size(&json!("N/A")), 0);
     }
 }

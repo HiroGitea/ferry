@@ -4,9 +4,16 @@
 #   # then in /etc/ferry/ferry.toml:  default_image = "localhost/ferry-pytorch:latest"
 #
 # Jobs run with cwd=/work (uploaded code), write results to /out, read datasets from /data.
-FROM docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+#
+# The base tag decides which GPUs work: RTX 50-series need PyTorch >= 2.7 built against
+# CUDA >= 12.8; the cuda13 builds need a recent driver and Turing (RTX 20 / T4) or newer cards —
+# use a cuda12.6 tag for older ones.
+FROM docker.io/pytorch/pytorch:2.15.0-cuda13.2-cudnn9-runtime
 
+# The base image ships PyTorch in the system Python (Ubuntu 24.04, PEP 668), so a plain
+# `pip install` is refused. The container is the isolation: allow it, here and in job steps.
 ENV PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
     FERRY_OUT=/out
 
@@ -15,7 +22,10 @@ RUN pip install --upgrade pip && pip install \
     mlflow tensorboard \
     transformers datasets accelerate
 
-# Non-root user matching `container.user = "1000:1000"` in ferry.toml.
-RUN useradd -m -u 1000 -s /bin/bash runner && mkdir -p /work /out && chown runner:runner /work /out
-USER runner
+# Jobs run as `container.user` from ferry.toml: "0:0" under rootless podman (container root is
+# the daemon's account on the host), the daemon's own uid under docker. There is deliberately no
+# USER line: under rootless podman any other uid maps to a subordinate uid on the host, and the
+# daemon could then not read or clean up what the job wrote. No user is created either — the
+# Ubuntu base already has one for uid 1000 (`ubuntu`).
+RUN mkdir -p /work /out
 WORKDIR /work
